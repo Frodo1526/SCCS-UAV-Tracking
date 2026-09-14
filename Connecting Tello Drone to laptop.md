@@ -1,4 +1,5 @@
 Tello Drone Setup and Connection Guide
+(ChatGPT used to cleanup and format)
 1. Importing the Code
 Download the Tello Control project from the repository.
 Install the required external libraries:

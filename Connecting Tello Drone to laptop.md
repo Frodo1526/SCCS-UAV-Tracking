@@ -2,7 +2,7 @@ Tello Drone Setup and Connection Guide
 1. Importing the Code
 Download the Tello Control project from the repository.
 Install the required external libraries:
-```term
+```cmd
 pip install djitellopy opencv-python ultralytics numpy scipy
 ```
 ---

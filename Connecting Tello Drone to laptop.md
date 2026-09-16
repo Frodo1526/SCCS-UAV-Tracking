@@ -14,7 +14,7 @@ Note: One of the batteries is not functioning correctly.
 I have been placing the known-good battery in the slot farther away.
 Press the button on the side of the drone.
 The LED should begin blinking. Wait a few seconds for the drone to finish starting up.
-Run the Program
+Connect to drone via WiFi,
 Run the Tello control code.
 A successful connection should produce log output similar to:
 ```text

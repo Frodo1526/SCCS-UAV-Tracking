@@ -1,0 +1,15 @@
+services:
+  ground_station:
+    build:
+      context: .
+      dockerfile: ground_station/Dockerfile
+    image: sccs-ground-station:latest
+    container_name: sccs-ground-station
+    network_mode: host   # see networking note below
+    environment:
+      - DISPLAY=${DISPLAY}
+      - DRONE_CONFIG=/app/ground_station/config.toml
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./ground_station/config.toml:/app/ground_station/config.toml:ro
+    restart: "no"

@@ -1,0 +1,12 @@
+# drone_air -- runs on the Raspberry Pi 5 (air side)
+#
+# NOTE: mavsdk, pymavlink, PyGObject (gi) and the Hailo Python bindings are
+# heavily platform-specific and typically come from the Pi's OS image /
+# Hailo TAPPAS installation rather than a plain pip install. Versions below
+# are a starting point -- pin exact versions once confirmed on target hardware.
+
+numpy
+msgpack
+mavsdk
+pymavlink
+PyGObject

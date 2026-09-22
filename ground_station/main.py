@@ -1,0 +1,127 @@
+import gi
+gi.require_version('Gst', '1.0')
+from gi.repository import Gst, GObject, GLib
+# do we not need to specify gst_bin as gst?
+import os
+import sys
+import platform
+import pygame #rendering UI
+import threading
+import logging
+
+from app_state import AppState
+from data_cmd import VIDEO_STREAM_PORT, DATA_PORT, COMMAND_PORT, RADXA_GADGET_IP
+from data_cmd import run_data_receiver
+from video import run_gstreamer_receiver
+from ui import handle_input, render_graphics
+
+def main():
+    """
+    Main entry point
+    """
+   
+    # Init GStreamer and GLib main loop
+    Gst.init(None)
+    main_loop = GLib.MainLoop()
+   
+    logging.info("Initializing ground station...")
+    logging.info("Initializing ground station...")
+    logging.info(f"Expecting Radxa USB gadget at: {RADXA_GADGET_IP}")
+    logging.info(f"Video  : UDP :{VIDEO_STREAM_PORT}")
+    logging.info(f"Data   : UDP :{DATA_PORT}")
+    logging.info(f"Command: TCP :{COMMAND_PORT}")
+   
+    app_state = AppState()
+   
+    # Start GStreamer in separate thread
+    gst_thread = threading.Thread(target=run_gstreamer_receiver, args=(app_state, main_loop), daemon=True)
+    gst_thread.start()
+   
+    # Start Data receiver in separate thread
+    data_thread = threading.Thread(target=run_data_receiver, args=(app_state,), daemon=True)
+    data_thread.start()
+
+    # Set appropriate SDL video driver based on operating system
+    system = platform.system()
+    if system == 'Darwin':  # macOS
+        os.environ.setdefault('SDL_VIDEODRIVER', 'cocoa')
+    elif system == 'Linux':
+        os.environ.setdefault('SDL_VIDEODRIVER', 'x11')
+    elif system == 'Windows':
+        os.environ.setdefault('SDL_VIDEODRIVER', 'windib')
+   
+    # Initialize pygame
+    pygame.init()
+    if not pygame.get_init():
+        logging.error("Failed to initialize Pygame.")
+        sys.exit(1)
+    logging.info("Pygame initialized successfully.")
+    # Default size, will be resized on first frame
+    screen = pygame.display.set_mode((1280, 720), pygame.RESIZABLE)
+    pygame.display.set_caption("Ground Station")
+    clock = pygame.time.Clock()
+    fonts = {
+        'main': pygame.font.Font(None, 32),
+        'small': pygame.font.Font(None, 24)
+    }
+   
+    ui_state = { 'running': True }
+   
+    logging.info("Ground station ready. Waiting for video feed...")
+   
+    # Main loop (Pygame UI)
+    try:
+        while ui_state['running']:
+            # Check for GStreamer errors
+            if app_state.gst_error_event.is_set():
+                logging.error("GStreamer error detected, exiting...")
+                break
+           
+            # Get local copies of shared data (thread-safe)
+            with app_state.frame_lock:
+                local_frame = app_state.pygame_frame.copy() if app_state.pygame_frame is not None else None
+           
+            with app_state.tracking_data_lock:
+                local_tracking_data = app_state.tracking_data.copy()
+           
+            with app_state.target_lock:
+                local_target_id = app_state.current_target_id
+           
+            # Handle input
+            handle_input(pygame.event.get(), ui_state, app_state, local_tracking_data)
+           
+            # Resize screen if needed
+            if local_frame is not None and screen.get_size() != (local_frame.shape[1], local_frame.shape[0]):
+                frame_width, frame_height = local_frame.shape[1], local_frame.shape[0]
+                screen = pygame.display.set_mode((frame_width, frame_height), pygame.RESIZABLE)
+                print(f"Video display resized to: {frame_width}x{frame_height}")
+           
+            # Render UI
+            render_graphics(screen, local_frame, local_tracking_data, local_target_id, ui_state, fonts)
+           
+            clock.tick(60) # Limit UI framerate
+           
+    except KeyboardInterrupt:
+        logging.info("\nShutdown requested by user (Ctrl+C)...")
+       
+    finally:
+        logging.info("Shutting down...")
+       
+        # Stop threads
+        app_state.gst_error_event.set()
+        app_state.data_thread_stop_event.set()
+       
+        if main_loop.is_running():
+            logging.info("Quitting GLib main loop...")
+            main_loop.quit()
+       
+        logging.info("Waiting for threads to join...")
+        gst_thread.join(timeout=3)
+        data_thread.join(timeout=2)
+       
+        pygame.quit()
+        logging.info("Ground station stopped")
+        sys.exit(0)
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,8 @@
+# tello_poc -- standalone Tello proof-of-concept, runs on a laptop
+#
+# NOTE: does not need mavsdk, pymavlink, PyGObject, or pygame -- those are
+# drone_air/ground_station-only dependencies.
+
+djitellopy
+ultralytics
+opencv-python

@@ -1,0 +1,5 @@
+# forwarder -- runs on the Radxa Zero 3W bridge
+#
+# No third-party dependencies. forwarder.py uses only the Python standard
+# library (socket, threading, time, sys, logging). This file exists so the
+# absence of dependencies is explicit rather than just "no file present."

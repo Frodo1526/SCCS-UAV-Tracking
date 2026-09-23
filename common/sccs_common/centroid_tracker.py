@@ -18,6 +18,49 @@ import logging
 class CentroidTracker:
     def __init__(self, max_disappeared=20, tight_distance_ratio=0.05, max_distance_ratio=0.10, hit_streak_required=3, velocity_decay=0.5,
                  edge_margin=20, next_id_counter=1, max_color_distance=15.0, iou_suppresion_thresh=0.6):
+        '''
+        Initializes a CentroidTracker with empty confirmed/tentative track
+        registries and the tunable parameters used by update_all_detections()
+        and update_target() for matching, scoring, and aging tracks.
+
+        Args:
+            max_disappeared (int): Number of consecutive unmatched frames a
+                confirmed track may accumulate before it is deregistered.
+                Defaults to 20.
+            tight_distance_ratio (float): Fraction of frame width defining the
+                "tight" distance threshold; within this distance, update_target()
+                accepts a match even if the color deficit is otherwise borderline.
+                Defaults to 0.05.
+            max_distance_ratio (float): Fraction of frame width defining the
+                maximum spatial distance between a predicted centroid and a
+                candidate detection for the pair to be considered a possible
+                match at all. Defaults to 0.10.
+            hit_streak_required (int): Number of consecutive frames a tentative
+                track must be matched before it is promoted to a confirmed
+                track with a stable ID. Defaults to 3.
+            velocity_decay (float): Per-frame multiplicative decay applied to a
+                track's stored velocity while it goes unmatched, e.g. 0.5 halves
+                the velocity each unmatched frame to limit prediction drift
+                during occlusion. Defaults to 0.5.
+            edge_margin (int): Distance in pixels from the nearest frame edge
+                within which a track's velocity-based position prediction is
+                progressively scaled down, so predictions don't extrapolate
+                off-screen near boundaries. Defaults to 20.
+            next_id_counter (int): Starting value of the incrementing counter
+                used to assign IDs to newly confirmed (promoted) tracks.
+                Defaults to 1.
+            max_color_distance (float): Euclidean color-distance value used to
+                normalize the color component of the match score; a distance at
+                or above this value is treated as a complete color mismatch
+                (deficit of 1.0). Defaults to 15.0.
+            iou_suppresion_thresh (float): IoU threshold above which an
+                unmatched detection is treated as a duplicate of an existing
+                confirmed track's bounding box and is excluded from becoming a
+                new tentative track. Defaults to 0.6.
+
+        Returns:
+            None: This function does not return a value.
+        '''
         # Confirmed tracks, keyed by object ID with detection info dicts
         self.tracked_objects = OrderedDict() # Mapping object ids to detection info dicts
         self.disappeared_frames = OrderedDict() # Mapping object ids to missed frame counts
@@ -41,21 +84,45 @@ class CentroidTracker:
         self.next_id_counter = next_id_counter # Incrementing id counter to give each object a unique ID
 
     def update_all_detections(self, current_detections_info, frame_width, frame_height):
-        """
-        Main update step. Call once per frame with all filtered detections.
+        '''
+        Runs one full tracking update for every detection in the current frame,
+        matching detections against confirmed tracks first, then tentative
+        tracks, and registering any leftovers as new tentative tracks.
 
-        Matching runs in two passes:
-          Pass 1 — match detections against confirmed tracks (priority)
-          Pass 2 — match remaining detections against tentative tracks
-          Remainder — create new tentative entries
+        Matching proceeds in two Hungarian-algorithm passes:
+        1. Confirmed tracks vs. all detections, scored by
+            _compute_match_score (spatial distance, color, label, confidence,
+            IoU). Matches with a cost below 1.0 are accepted; matched confirmed
+            tracks are updated via _update_confirmed_track, and unmatched
+            confirmed tracks are aged via _age_confirmed.
+        2. Remaining unmatched detections (after discarding any that overlap
+            an existing confirmed track's bbox above iou_suppresion_thresh)
+            vs. tentative tracks, scored by a simplified spatial+color cost.
+            Matches below 1.0 increment the tentative track's hit streak and
+            promote it to confirmed once hit_streak_required is reached;
+            unmatched tentative tracks are discarded via _age_tentative.
+        3. Any detection still unmatched after both passes is registered as a
+            brand-new tentative track via _register_tentative.
 
-        Returns only confirmed tracked_objects (same dict as before)
-        
-        :param current_detections_info: list of detection info dicts with at least 'centroid' key
-        :param frame_width: width of the video frame (for distance normalization)
-        :param frame_height: height of the video frame (for distance normalization)
-        :return: dict of confirmed tracked objects with their detection info
-        """
+        If current_detections_info is empty, or contains non-finite (NaN/Inf)
+        centroid values, all confirmed and tentative tracks are aged/discarded
+        as if nothing matched, and no new tracks are registered.
+
+        Args:
+            current_detections_info (list[dict]): Detections for this frame.
+                Each dict must contain at least 'centroid' (x, y) and 'bbox'
+                (x1, y1, x2, y2); 'label', 'confidence', and 'color' are used
+                when present for scoring.
+            frame_width (int): Width of the video frame, used to normalize
+                distance thresholds.
+            frame_height (int): Height of the video frame, used for
+                velocity-prediction edge suppression.
+
+        Returns:
+            dict: self.tracked_objects, an OrderedDict mapping confirmed track
+                IDs to their most recent detection info dict. Tentative
+                (unconfirmed) tracks are never included in the return value.
+        '''
         max_distance = frame_width * self.max_distance_ratio
         tight_distance = frame_width * self.tight_distance_ratio
         
@@ -212,12 +279,51 @@ class CentroidTracker:
         return self.tracked_objects
     
     def update_target(self, current_detections_info, target_id, frame_width, frame_height):
-        """
-        Update target detection only. Call once per frame while tracking.
-        Called when tracking for lighter computation overhead rather than determining matches
-        of every detection within the frame.
-        
-        """
+        '''
+        Updates a single confirmed track (the active tracking target) against
+        the current frame's detections, without evaluating matches for any
+        other confirmed or tentative track. Used while actively tracking a
+        target to reduce per-frame computation versus update_all_detections().
+
+        Behavior:
+        - If current_detections_info is empty, the target's disappeared-frame
+            count is incremented (and the track deregistered if it exceeds
+            max_disappeared_frames) or its velocity is decayed, and {} is
+            returned.
+        - If target_id is not present in self.tracked_objects, the target is
+            logged as not found and {} is returned (no fallback to matching
+            against all detections is performed).
+        - Otherwise, a velocity-predicted centroid for the target is computed
+            (edge-margin-suppressed, as in _build_predicted_centroids) and
+            compared against every detection in order. A detection is accepted
+            as a match if it is within tight_distance, or within max_distance
+            with a color deficit no greater than 0.5, and the full weighted
+            match score (_compute_match_score) is below 1.0. The first
+            detection satisfying these conditions is used to update the track
+            via _update_confirmed_track, and the search stops.
+        - If no detection matches, the target's disappeared-frame count is
+            incremented; the track is deregistered if this exceeds
+            max_disappeared_frames (returning {}), otherwise its velocity is
+            decayed.
+
+        Args:
+            current_detections_info (list[dict]): Detections for this frame,
+                each with at least 'centroid', 'bbox', and optionally 'color',
+                'label', 'confidence'.
+            target_id: ID of the confirmed track to update. Must be a key of
+                self.tracked_objects for a match attempt to be made.
+            frame_width (int): Width of the video frame, used to normalize the
+                distance threshold and edge-proximity calculation.
+            frame_height (int): Height of the video frame, used for the
+                edge-proximity calculation.
+
+        Returns:
+            dict: {target_id: <detection info dict>} if the target track is
+                still confirmed after this update (matched or not-yet-expired).
+            dict: {} (empty) if there were no detections this frame, if
+                target_id is not a known confirmed track, or if the target was
+                deregistered this call after exceeding max_disappeared_frames.
+        '''
         
         if not current_detections_info:
             self.disappeared_frames[target_id] += 1
@@ -302,19 +408,34 @@ class CentroidTracker:
             return {}
         logging.debug(f"Returning tracked object {target_id}: {self.tracked_objects[target_id]}")
         return {target_id : self.tracked_objects[target_id]}
-             
-              
+
     def _build_predicted_centroids(self, object_ids, frame_width, frame_height):
-        """
-        Build velocity-predicted centroids for confirmed object IDs.
-        Velocity weight is suppressed near frame edges to prevent off-screen
-        extrapolation, which destabilises matching for partially visible objects.
-        
-        :param object_ids: list of confirmed object IDs to build predictions for
-        :param frame_width: width of the video frame (for distance normalization)
-        :param frame_height: height of the video frame (for distance normalization)
-        :return: list of predicted centroid tuples corresponding to the input object IDs
-        """
+        '''
+        Computes a velocity-extrapolated centroid for each given confirmed
+        track ID, used as the "expected position this frame" against which
+        incoming detections are matched.
+
+        For each track, its last known centroid is advanced by its stored
+        velocity, but the velocity's influence is scaled down as the centroid
+        nears any frame edge (down to zero at the edge itself, full strength
+        once at least edge_margin pixels from every edge). This prevents the
+        prediction from extrapolating a track off-screen when it is partially
+        occluded by the frame boundary. The result is clipped to stay within
+        the frame.
+
+        Args:
+            object_ids (list): Confirmed track IDs (keys of self.tracked_objects)
+                to build predictions for, in the order predictions should be
+                returned.
+            frame_width (int): Width of the video frame, used to clip the
+                predicted x-coordinate and compute edge proximity.
+            frame_height (int): Height of the video frame, used to clip the
+                predicted y-coordinate and compute edge proximity.
+
+        Returns:
+            list[tuple[int, int]]: Predicted (x, y) centroid for each ID in
+                object_ids, in the same order.
+        '''
         predicted = []
         for object_id in object_ids:
             cx, cy = self.tracked_objects[object_id]['centroid'] # Centroid of most recent detection for this track
@@ -330,14 +451,24 @@ class CentroidTracker:
         return predicted
     
     def _calculate_color_distance(self, object_id, detection_info):
-        """
-        Calculates and returns the euclidean distance between previous 
-        detection and current frame detection color for confirmed tracks.
-        
-        :param object_id: ID of the confirmed track to compute color distance
-        :param detection_info: detection info dict from current frame corresponding to this track
-        :return: euclidean distance between previous color and input color as a floating-point number
-        """
+        '''
+        Computes the Euclidean distance between a confirmed track's
+        last-recorded color and a candidate detection's color, used as the
+        color component of the match score.
+
+        Args:
+            object_id: ID of the confirmed track; must be a key of self.colors.
+            detection_info (dict): Detection info dict for the current frame
+                candidate; must contain a 'color' value.
+
+        Returns:
+            float (numpy.float64): Euclidean distance between the track's
+                stored color and the detection's color.
+
+        Raises:
+            KeyError: If object_id is not present in self.colors.
+            KeyError: If detection_info does not contain a 'color' key.
+        '''
         
         input_color = detection_info['color']
         prev_color = self.colors[object_id]
@@ -345,27 +476,42 @@ class CentroidTracker:
         return np.linalg.norm(np.array(input_color) - np.array(prev_color))
     
     def _calculate_color_distance_tentative(self, tent_id, detection_info):
-        """
-        Calculates color distance for tentative tracks (uses detection's own color).
-        
-        :param tent_id: ID of the tentative track
-        :param detection_info: detection info dict from current frame
-        :return: euclidean distance between tentative object's color and detection's color
-        """
+        '''
+        Computes the Euclidean color distance between a tentative track's
+        stored color and a candidate detection's color, used when scoring
+        tentative-track matches in update_all_detections().
+
+        Unlike _calculate_color_distance, this falls back to (0, 0, 0) for
+        either side if a 'color' value is missing, rather than raising.
+
+        Args:
+            tent_id: ID of the tentative track (key of self._tentative_objects).
+            detection_info (dict): Detection info dict for the current frame
+                candidate.
+
+        Returns:
+            float (numpy.float64): Euclidean distance between the tentative
+                track's color and the detection's color.
+        '''
         tent_color = self._tentative_objects[tent_id].get('color', (0, 0, 0))
         detection_color = detection_info.get('color', (0, 0, 0))
         
         return np.linalg.norm(np.array(detection_color) - np.array(tent_color))
     
     def _compute_iou(self, bbox1, bbox2):
-        """
-        Calculates the Intersection over Union (IoU) of two bounding boxes.
-        
-        :param bbox1: list of bounding box edges [x1, y1, x2, y2] for current detection
-        :param bbox2: list of bounding box edges [x1, y1, x2, y2] for last stored detection for id
-        :return: overlap value of two bounding boxes to test against threshold
-        
-        """
+        '''
+        Computes the Intersection over Union (IoU) of two axis-aligned
+        bounding boxes.
+
+        Args:
+            bbox1 (Sequence[float]): First bounding box as (x1, y1, x2, y2).
+            bbox2 (Sequence[float]): Second bounding box as (x1, y1, x2, y2).
+
+        Returns:
+            float: 0.0 if the boxes do not overlap. Otherwise the overlap
+                ratio in [0.0, 1.0], i.e. intersection area divided by union
+                area (0.0 if the union area is also zero).
+        '''
         x1 = max(bbox1[0], bbox2[0])
         y1 = max(bbox1[1], bbox2[1])
         x2 = min(bbox1[2], bbox2[2])
@@ -381,27 +527,53 @@ class CentroidTracker:
         return intersection / union if union > 0 else 0.0
     
     def _compute_match_score(self, object_id, detection, distance, max_distance, tight_distance, frame_width, frame_height):
-        """
-        Compute a weighted matching score (0.0 = perfect match, 1.0 = worst match).
-        Combines spatial distance, color similarity, label match, confidence match, and IoU.
-        Returns 2.0 (invalid) if hard constraints are violated.
-        
-        Weights:
-        - Spatial distance: 0.35 (most important, normalized to max_distance)
-        - Color distance: 0.25
-        - Label match: 0.20 (0 if match, 1 if mismatch)
-        - Confidence match: 0.15 (0 if similar, 1 if very different)
-        - IoU bonus: -0.05 (negative weight, subtracts from score if boxes overlap well)
-        
-        :param object_id: ID of the confirmed track
-        :param detection: detection info dict from current frame
-        :param distance: spatial distance already computed
-        :param max_distance: max allowed spatial distance
-        :param tight_distance: tight distance threshold
-        :param frame_width: width of frame (for normalization)
-        :param frame_height: height of frame
-        :return: float score (lower is better), or 2.0 if invalid match
-        """
+        '''
+        Computes a weighted match-quality score between a confirmed track and
+        a candidate detection, combining spatial distance, color similarity,
+        label agreement, confidence similarity, and bounding-box overlap.
+        Lower is better; 0.0 is a perfect match.
+
+        Two hard constraints are checked first and cause an immediate invalid
+        result (2.0):
+        1. distance exceeds max_distance.
+        2. Both the track and the detection have a non-empty 'label' and
+            they differ.
+        3. The track's and detection's 'confidence' values (default 0.0 if
+            absent) differ by more than 0.25.
+
+        If all hard constraints pass, the soft score is the sum of:
+        - Spatial distance, normalized to max_distance, weight 0.35.
+        - Color distance (via _calculate_color_distance), normalized to
+            self.max_color_distance, weight 0.25.
+        - Label mismatch penalty, weight 0.20 (0 if either label is empty or
+            they match, 0.20 if both present and differ).
+        - Confidence-difference penalty, normalized to a 0.25 span, weight
+            0.15.
+        - An IoU bonus (via _compute_iou) that subtracts up to 0.05 from the
+            score when the boxes overlap more than 0.1 IoU.
+        The final score is clamped to be non-negative.
+
+        Args:
+            object_id: ID of the confirmed track being scored against.
+            detection (dict): Candidate detection info dict for the current
+                frame; expected to contain 'bbox' and optionally 'label',
+                'confidence'.
+            distance (float): Pre-computed spatial distance between the
+                track's predicted centroid and the detection's centroid.
+            max_distance (float): Maximum spatial distance allowed for any
+                match (hard constraint threshold).
+            tight_distance (float): Unused within this method; accepted for a
+                consistent call signature with other matching helpers.
+            frame_width (int): Unused within this method; accepted for a
+                consistent call signature with other matching helpers.
+            frame_height (int): Unused within this method; accepted for a
+                consistent call signature with other matching helpers.
+
+        Returns:
+            float: 2.0 if any hard constraint is violated (an invalid match).
+            float: A non-negative soft-constraint score, normally in roughly
+                [0.0, 1.0], where lower indicates a better match.
+        '''
         # Hard constraint 1: Must be within spatial bounds
         if distance > max_distance:
             return 2.0
@@ -449,12 +621,28 @@ class CentroidTracker:
         return max(0.0, score)  # Clamp to non-negative
 
     def _update_confirmed_track(self, object_id, detection_info):
-        """
-        Update a confirmed track with a matched detection and recompute velocity.
-        
-        :param object_id: ID of the confirmed track to update
-        :param detection_info: detection info dict from the current frame that matched this track
-        """
+        '''
+        Applies a matched detection to a confirmed track: recomputes and stores
+        the per-frame velocity from the change in centroid, updates the stored
+        color, replaces the track's detection info with the new detection, and
+        resets its disappeared-frame counter to 0.
+
+        Args:
+            object_id: ID of the confirmed track to update; must already be a
+                key of self.tracked_objects.
+            detection_info (dict): The detection info dict that matched this
+                track this frame; must contain 'centroid' and 'color'.
+
+        Returns:
+            None: This function does not return a value. It mutates
+                self.velocities, self.colors, self.tracked_objects, and
+                self.disappeared_frames in place.
+
+        Raises:
+            KeyError: If object_id is not already present in
+                self.tracked_objects.
+            KeyError: If detection_info lacks a 'centroid' or 'color' key.
+        '''
         prev_centroid = self.tracked_objects[object_id]['centroid']
         new_centroid  = detection_info['centroid']
         vx = new_centroid[0] - prev_centroid[0] # Per-frame x-direction velocity (pixels/franme)
@@ -470,13 +658,22 @@ class CentroidTracker:
         self.disappeared_frames[object_id] = 0
 
     def _age_confirmed(self, matched_rows):
-        """
-        Age all confirmed tracks not matched this frame.
-        Decays velocity and deregisters tracks absent too long.
-        matched_rows is a set of row indices into the confirmed ID list.
-        
-        :param matched_rows: set of row indices corresponding to confirmed tracks that were matched this frame
-        """
+        '''
+        Ages every confirmed track that was not matched this frame: increments
+        its disappeared-frame count, deregisters it if that count exceeds
+        max_disappeared_frames, and otherwise decays its stored velocity toward
+        zero so predictions don't keep drifting while the track is absent.
+
+        Args:
+            matched_rows (set[int]): Row indices (positions in the current
+                iteration order of self.tracked_objects.keys()) of confirmed
+                tracks that WERE matched this frame and should be skipped.
+
+        Returns:
+            None: This function does not return a value. It mutates
+                self.disappeared_frames and self.velocities in place, and may
+                remove entries via _deregister.
+        '''
         for row, object_id in enumerate(list(self.tracked_objects.keys())):
             if row in matched_rows:
                 continue
@@ -489,35 +686,68 @@ class CentroidTracker:
                 self.velocities[object_id] = (vx * self.velocity_decay, vy * self.velocity_decay)
 
     def _age_tentative(self, matched_tent_rows):
-        """
-        Discard any tentative track not matched this frame.
-        Tentative tracks get no second chances — one missed frame and they're gone.
-        Real objects persist across frames; single-frame ghosts do not.
-        
-        :param matched_tent_rows: set of row indices corresponding to tentative tracks that were matched this frame
-        """
+        '''
+        Discards every tentative track that was not matched this frame.
+        Tentative tracks have no aging grace period: a single missed frame
+        causes immediate removal, on the premise that real objects are matched
+        on consecutive frames while single-frame false positives are not.
+
+        Args:
+            matched_tent_rows (set[int]): Row indices (positions in the current
+                iteration order of self._tentative_objects.keys()) of tentative
+                tracks that WERE matched this frame and should be kept.
+
+        Returns:
+            None: This function does not return a value. It removes entries
+                from self._tentative_objects and self._tentative_hits in place.
+        '''
         for row, tent_id in enumerate(list(self._tentative_objects.keys())):
             if row not in matched_tent_rows:
                 del self._tentative_objects[tent_id]
                 del self._tentative_hits[tent_id]
 
     def _register_tentative(self, detection_info):
-        """
-        Add a new tentative track candidate. Uses negative IDs internally.
-        
-        :param detection_info: detection info dict from the current frame for this new tentative track
-        """
+        '''
+        Registers a new tentative (unconfirmed) track for a detection that did
+        not match any existing confirmed or tentative track. Tentative tracks
+        use a negative, decrementing internal ID sequence so they can never
+        collide with the positive IDs used for confirmed tracks.
+
+        Args:
+            detection_info (dict): Detection info dict for the current frame
+                that will seed the new tentative track.
+
+        Returns:
+            None: This function does not return a value. It adds an entry to
+                self._tentative_objects (with hit count 1 in
+                self._tentative_hits) and decrements self._tentative_id_seq.
+        '''
         self._tentative_id_seq -= 1
         tid = self._tentative_id_seq
         self._tentative_objects[tid] = detection_info
         self._tentative_hits[tid] = 1
 
     def _promote_tentative(self, tent_id):
-        """
-        Graduate a tentative track to a confirmed track with a stable positive ID.
-        
-        :param tent_id: ID of the tentative track to promote
-        """
+        '''
+        Promotes a tentative track that has reached hit_streak_required
+        consecutive matches into a confirmed track with a new, stable positive
+        ID from _get_next_id(). The tentative track's bookkeeping entries are
+        removed as part of the promotion.
+
+        Args:
+            tent_id: ID of the tentative track to promote; must be a key of
+                self._tentative_objects.
+
+        Returns:
+            None: This function does not return a value. It removes tent_id
+                from self._tentative_objects/self._tentative_hits and adds a
+                new entry to self.tracked_objects, self.disappeared_frames,
+                and self.colors.
+
+        Raises:
+            KeyError: If tent_id is not present in self._tentative_objects or
+                self._tentative_hits.
+        '''
         detection_info = self._tentative_objects.pop(tent_id)
         self._tentative_hits.pop(tent_id)
         new_id = self._get_next_id()
@@ -527,12 +757,37 @@ class CentroidTracker:
        
         logging.debug(f"Track ID {new_id} confirmed after {self.hit_streak_required} consecutive matches.")
 
-    def _get_next_id(self): # Get the next unique ID for a new confirmed track
+    def _get_next_id(self):
+        '''
+        Returns the next unique ID to assign to a newly confirmed track, and
+        advances the internal counter so the same ID is never issued twice.
+
+        Returns:
+            int: The next available confirmed-track ID (the pre-increment
+                value of self.next_id_counter).
+        '''
         new_id = self.next_id_counter
         self.next_id_counter += 1
         return new_id
 
-    def _deregister(self, object_id): # Remove a track that has disappeared for too long
+    def _deregister(self, object_id):
+        '''
+        Removes a confirmed track from all tracker state because it has gone
+        unmatched for longer than max_disappeared_frames.
+
+        Args:
+            object_id: ID of the confirmed track to remove; must be a key of
+                self.tracked_objects and self.disappeared_frames.
+
+        Returns:
+            None: This function does not return a value. It deletes object_id
+                from self.tracked_objects and self.disappeared_frames, and
+                removes it (if present) from self.velocities and self.colors.
+
+        Raises:
+            KeyError: If object_id is not present in self.tracked_objects or
+                self.disappeared_frames.
+        '''
         logging.debug(f"Track ID {object_id} deregistered after {self.disappeared_frames[object_id]} missed frames.")
         del self.tracked_objects[object_id]
         del self.disappeared_frames[object_id]

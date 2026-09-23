@@ -32,14 +32,27 @@ DEFAULT_PORTS = {
     "command_port": 5603,
 }
 
-
 def pack_fragments(seq, payload_bytes):
-    """Split payload_bytes into a sequence of (header + chunk) packets.
+    '''
+    Splits a payload into one or more UDP-sized fragments, each prefixed
+    with an 8-byte header (sequence number, fragment index, total fragment
+    count) so the receiver can reassemble the original payload out of
+    order. An empty payload still yields exactly one (header-only) packet.
 
-    Mirrors the original private ``_pack_fragments`` generator from
-    ``vid_cmd_data.py``, exposed here so both the sending side and a test
-    suite can use the same implementation.
-    """
+    Args:
+        payload_bytes (bytes | bytearray): The full message payload to
+            fragment.
+        seq (int): Sequence number identifying this message; masked to 32
+            bits when packed into the header.
+
+    Yields:
+        bytes: Successive (header + chunk) packets, each at most
+            PACKET_MAX_BYTES long, until the full payload has been
+            covered.
+
+    Raises:
+        TypeError: If payload_bytes is not a bytes or bytearray instance.
+    '''
     if not isinstance(payload_bytes, (bytes, bytearray)):
         raise TypeError("payload_bytes must be bytes or bytearray")
 
@@ -52,13 +65,26 @@ def pack_fragments(seq, payload_bytes):
         header = struct.pack(PACKET_HEADER_FMT, seq & 0xFFFFFFFF, frag_id, frag_count)
         yield header + chunk
 
-
 def unpack_header(packet_bytes):
-    """Parse the fixed 8-byte header off the front of a received datagram.
+    '''
+    Parses the fixed 8-byte fragmentation header off the front of a
+    received UDP datagram.
 
-    Returns (seq, frag_id, frag_count, payload). Raises ValueError if the
-    packet is shorter than the header (a "runt" packet).
-    """
+    Args:
+        packet_bytes (bytes): A raw datagram, expected to start with an
+            8-byte header as packed by pack_fragments().
+
+    Returns:
+        tuple[int, int, int, bytes]: (seq, frag_id, frag_count, payload),
+            where seq is the message sequence number, frag_id is this
+            fragment's 0-based index, frag_count is the total number of
+            fragments for the message, and payload is everything after
+            the header.
+
+    Raises:
+        ValueError: If packet_bytes is shorter than PACKET_HEADER_LEN (a
+            "runt" packet that cannot contain a full header).
+    '''
     if len(packet_bytes) < PACKET_HEADER_LEN:
         raise ValueError(f"packet too short: {len(packet_bytes)} bytes")
     seq, frag_id, frag_count = struct.unpack(
@@ -66,10 +92,24 @@ def unpack_header(packet_bytes):
     )
     return seq, frag_id, frag_count, packet_bytes[PACKET_HEADER_LEN:]
 
-
 def reassemble(fragments_by_id):
-    """Join an already-complete {frag_id: payload_bytes} mapping back into
-    the original payload, in order. Raises KeyError if any frag_id in
-    range(len(fragments_by_id)) is missing.
-    """
+    '''
+    Joins a complete mapping of fragment index to payload bytes back into
+    the original, contiguous payload, in fragment order.
+
+    Args:
+        fragments_by_id (dict[int, bytes]): Mapping from fragment index to
+            that fragment's payload bytes. Must contain every integer key
+            from 0 up to (but not including) len(fragments_by_id) for a
+            correct reassembly.
+
+    Returns:
+        bytes: The concatenation of fragments_by_id[0], fragments_by_id[1],
+            ..., fragments_by_id[len(fragments_by_id) - 1].
+
+    Raises:
+        KeyError: If any index in range(len(fragments_by_id)) is missing
+            from fragments_by_id (i.e. the fragment set is incomplete or
+            has gaps).
+    '''
     return b"".join(fragments_by_id[i] for i in range(len(fragments_by_id)))

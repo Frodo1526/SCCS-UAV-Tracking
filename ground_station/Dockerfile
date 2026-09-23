@@ -3,8 +3,6 @@ FROM ubuntu:24.04
 ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive
 
-# python3 here is 3.12 on Ubuntu 24.04 -- and python3-gi / pip below
-# both target that same interpreter, so `import gi` actually works.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
@@ -26,13 +24,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# common/sccs_common is imported as `common.sccs_common.*`, so both
-# folders need to sit side-by-side here.
 COPY common/ /app/common/
 COPY ground_station/ /app/ground_station/
 
-# Ubuntu blocks bare `pip install` into the system Python (PEP 668).
-# We override it deliberately -- the container is already our sandbox.
+# Overrides confirmation error and removes cached packages
 RUN pip3 install --break-system-packages --no-cache-dir \
     -r /app/ground_station/requirements-docker.txt
 

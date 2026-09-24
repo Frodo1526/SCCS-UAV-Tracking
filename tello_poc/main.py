@@ -28,7 +28,23 @@ YOLO_MODEL = 'yolov8s.pt'
 WINDOW_NAME = 'Tello POC'
 
 def battery_refresh_loop(tello, app_state):
-    """Periodically refresh battery status on a separate thread to avoid blocking display."""
+    '''
+    Background loop that polls the Tello's battery percentage every 30
+    seconds and stores it in app_state.battery, so the display thread
+    doesn't have to block on the (slower) battery query itself. Runs
+    until app_state.stop_event is set. Failures to query the battery are
+    logged as warnings and do not stop the loop.
+
+    Args:
+        tello (djitellopy.Tello): Tello SDK client used to query battery
+            level.
+        app_state (AppState): Shared application state; battery is
+            updated under app_state.battery_lock.
+
+    Returns:
+        None: This function does not return a value; it runs until
+            app_state.stop_event is set.
+    '''
     battery = 100
     while not app_state.stop_event.is_set():
         try:
@@ -41,6 +57,55 @@ def battery_refresh_loop(tello, app_state):
             logging.warning(f"Couldn't refresh battery: {e}")
     
 def main():
+    '''
+    Entry point for the Tello proof-of-concept subsystem. Loads the YOLOv8
+    model, connects to the Tello, checks/logs its battery, starts the
+    video stream, waits (up to a 10-second timeout) for the first frame to
+    arrive, and constructs the shared AppState. Opens an OpenCV display
+    window with a mouse callback for target selection (via
+    ui.make_mouse_callback()), and starts the battery-refresh thread and
+    the YOLO inference thread (yolov8_inference.run_inference_loop) as
+    daemons, waiting for the first tracked frame before entering the main
+    loop.
+
+    In the main loop, each iteration: takes thread-safe local copies of
+    the current frame, drone_state, target_id, tracked-object snapshot,
+    battery level, and command string; periodically logs a status line;
+    draws the HUD/overlay via ui.draw_overlay() (falling back to the raw
+    frame if overlay drawing failed) and displays it in the OpenCV window;
+    warns if the video stream appears stalled (no new frame in over 3
+    seconds); and handles keyboard input:
+      - T: if not airborne, starts a background thread that calls
+        tello.takeoff(), starts a new control-loop thread
+        (ctrl.run_control_loop), and marks the drone airborne.
+      - L: starts a background thread that signals the control loop to
+        stop, forces drone_state back to "MANUAL" and clears target_id,
+        briefly sleeps, then calls tello.land() and marks the drone not
+        airborne.
+      - C: clears the target and forces drone_state to "MANUAL"
+        immediately (synchronously, on the main thread).
+      - Q / Esc: breaks out of the main loop.
+    Additionally tracks which of the WASD/RF manual-control keys are
+    currently held, using a per-key "age" counter so a key is treated as
+    released only after ~6 consecutive frames (about 200ms) without being
+    seen again, to avoid jittery stop/start behavior; pressing one of an
+    opposing pair (e.g. W vs S) immediately clears the other.
+
+    On exit (normal Q/Esc, or KeyboardInterrupt), sends a final zero RC
+    command, sets app_state.stop_event, joins any takeoff/land/control
+    threads and the inference thread (with timeouts), lands the drone if
+    still airborne (temporarily ignoring SIGINT while doing so), stops the
+    video stream, ends the Tello connection, destroys the OpenCV window,
+    and exits.
+
+    Returns:
+        None: This function does not return; it calls sys.exit(0) at the
+            end of its finally block.
+
+    Raises:
+        SystemExit: Raised (via sys.exit(1)) if no video frame arrives
+            from the Tello within the 10-second startup timeout.
+    '''
     logging.info("Loading YOLOv8 model...")
     model = YOLO(YOLO_MODEL)
     logging.info(f"{YOLO_MODEL} loaded successfully!")
@@ -139,6 +204,19 @@ def main():
             if key == ord('t') or key == ord('T'):
                 if not app_state.airborne:
                     def do_takeoff():
+                        '''
+                        Background-thread helper for the T (takeoff) key: clears
+                        app_state.control_stop if it was set (so a fresh control loop will
+                        actually run), commands the Tello to take off, starts a new
+                        ctrl.run_control_loop() thread, and marks app_state.airborne = True.
+                        Any exception during takeoff is caught and logged rather than
+                        propagated (in which case app_state.airborne is left unset).
+
+                        Returns:
+                            None: This function does not return a value; it mutates
+                                app_state and the enclosing scope's control_thread variable
+                                (via closure) as side effects.
+                        '''
                         try:
                             if app_state.control_stop.is_set():
                                 app_state.control_stop.clear()  # Ensure control loop is running
@@ -158,6 +236,18 @@ def main():
                     
             elif key == ord('l') or key == ord('L'):
                 def land_tello():
+                    '''
+                    Background-thread helper for the L (land) key: signals the control
+                    loop to stop sending RC commands (app_state.control_stop), forces
+                    drone_state to "MANUAL" and clears the target, briefly sleeps to let
+                    the control loop actually stop, then commands the Tello to land and
+                    marks app_state.airborne = False. Any exception during landing is
+                    caught and logged rather than propagated.
+
+                    Returns:
+                        None: This function does not return a value; it mutates
+                            app_state as a side effect.
+                    '''
                     try:
                         app_state.control_stop.set()  # Signal control loop to stop sending commands
                         # Stop the control loop from sending tracking commands

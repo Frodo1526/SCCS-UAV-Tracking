@@ -29,22 +29,39 @@ REASSEMBLY_TIMEOUT = float(_TEL.get("reassembly_timeout", 0.3))
 
 
 def run_data_receiver(app_state):
-    """
-    Listens for fragmented msgpack telemetry packets from the Air Pi.
+    '''
+    Runs a blocking UDP receive loop on DATA_PORT that reassembles
+    fragmented msgpack telemetry messages sent by the Air Pi (via
+    send_telemetry_udp()/pack_fragments()) and publishes each fully
+    reassembled message's object list to app_state.tracking_data.
 
-    Packet header (8 bytes, big-endian):
-        seq        (uint32) message sequence number, increments every frame
-        frag_id   (uint16) 0-based index of this fragment within the message
-        frag_count (uint16) total fragments that make up this message
+    Each received datagram is parsed as an 8-byte header (seq, frag_id,
+    frag_count) plus payload; datagrams shorter than the header, or whose
+    seq is less than or equal to the last fully-processed sequence number,
+    are discarded (as runt or stale/duplicate packets). Fragments for a
+    given seq are buffered in a per-message dict keyed by frag_id; once
+    all frag_count fragments for a seq have arrived, they are joined in
+    order and unpacked as msgpack, and the resulting wrapper's 'objects'
+    list replaces app_state.tracking_data under
+    app_state.tracking_data_lock. Any reassembly buffer whose first
+    fragment arrived more than REASSEMBLY_TIMEOUT seconds ago and is still
+    incomplete is dropped, so the display continues showing the last
+    complete set of bounding boxes rather than a partial/corrupt frame.
 
-    Packet-loss behaviour:
-        - If some fragments for a message never arrive, the message is silently
-          dropped after REASSEMBLY_TIMEOUT seconds.  The display keeps showing
-          the last fully-received set of bounding boxes no partial/corrupt
-          frames are ever rendered.
-        - Out-of-order or duplicate datagrams for already-processed messages
-          are discarded using the seq number.
-    """
+    The socket uses a 1-second receive timeout so the loop can check
+    app_state.data_thread_stop_event periodically; timeouts are treated as
+    normal polling. msgpack decode failures are logged and that message is
+    discarded; other exceptions are logged (unless the stop event is
+    already set) and followed by a 1-second pause.
+
+    Args:
+        app_state (AppState): Shared application state providing
+            tracking_data (and its lock) and data_thread_stop_event.
+
+    Returns:
+        None: This function does not return a value; it runs until
+            app_state.data_thread_stop_event is set.
+    '''
     # {seq: {'frags': {frag_id: bytes}, 'total': int, 'first_seen': float}}
     reassembly = {}
     last_processed_seq = -1
@@ -54,7 +71,6 @@ def run_data_receiver(app_state):
         s.bind(('', DATA_PORT))
         s.settimeout(1.0)   # allows the stop-event check on every timeout
         logging.info(f"Data receiver listening on port {DATA_PORT}")
-
         while not app_state.data_thread_stop_event.is_set():
             try:
                 data, addr = s.recvfrom(65536)
@@ -62,10 +78,7 @@ def run_data_receiver(app_state):
                 # ── Parse header ──────────────────────────────────────────────
                 if len(data) < PACKET_HEADER_LEN:
                     continue   # runt packet, ignore
-
-                seq, frag_id, frag_count = struct.unpack(
-                    PACKET_HEADER_FMT, data[:PACKET_HEADER_LEN]
-                )
+                seq, frag_id, frag_count = struct.unpack(PACKET_HEADER_FMT, data[:PACKET_HEADER_LEN])
                 payload = data[PACKET_HEADER_LEN:]
 
                 # ── Discard stale / duplicate datagrams ───────────────────────
@@ -84,9 +97,7 @@ def run_data_receiver(app_state):
                 # ── Try to assemble once all fragments have arrived ───────────
                 entry = reassembly[seq]
                 if len(entry['frags']) == entry['total']:
-                    body = b''.join(
-                        entry['frags'][i] for i in range(entry['total'])
-                    )
+                    body = b''.join(entry['frags'][i] for i in range(entry['total']))
                     try:
                         wrapper = msgpack.unpackb(body, raw=False)
                         tracking_list = wrapper.get('objects', [])
@@ -117,11 +128,21 @@ def run_data_receiver(app_state):
 # -----------------------------------------------------------------------------------------------
 # Target Selection (Command Sender)
 # -----------------------------------------------------------------------------------------------
-
-
-
 def send_command_to_air_pi(command_dict):
-    """Sends a JSON command to the Air Pi over TCP"""
+    '''
+    Opens a short-lived TCP connection to the Air Pi's command server
+    (via the Radxa USB gadget address and COMMAND_PORT) and sends
+    command_dict as a single JSON-encoded message.
+
+    Args:
+        command_dict (dict): The command payload to send, JSON-serialized
+            before sending (e.g. {'target_id': <id or None>}).
+
+    Returns:
+        None: This function does not return a value. Connection timeouts,
+            connection-refused errors, and any other exception are caught
+            and logged rather than raised.
+    '''
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(2.0) # 2-second timeout

@@ -4,7 +4,20 @@ import socket
 
 class AppState:
     def __init__(self):
+        '''
+        Constructs the shared mutable state used across the drone_air
+        subsystem's threads (GStreamer/inference, command server, and drone
+        control loop): a CentroidTracker instance configured for this
+        subsystem, the currently selected target ID, per-purpose
+        threading.Event stop flags, the current MAVSDK-facing drone state,
+        frame dimensions (populated once the video pipeline starts), a set of
+        threading.Lock objects guarding each piece of shared state, the UDP
+        socket and sequence counter used to send telemetry, and the most
+        recently computed velocity command components.
 
+        Returns:
+            None: This function does not return a value.
+        '''
         self.tracker = CentroidTracker(
             max_disappeared=30, 
             tight_distance_ratio=0.2,
@@ -49,4 +62,3 @@ class AppState:
         self.forward_velocity = 0.0
         self.up_velocity = 0.0
         self.yaw_velocity = 0.0
-

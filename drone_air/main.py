@@ -23,33 +23,72 @@ COMMAND_PORT = int(_NET.get("command_port", 5603))
 # Main Function
 # -----------------------------------------------------------------------------------------------
 def main():
+    '''
+    Entry point for the drone_air (Raspberry Pi / Hailo) subsystem.
+    Initializes GStreamer and a GLib main loop, constructs the shared
+    AppState and DroneCommandController, locates the Hailo post-process
+    shared library and the best available detection model (via
+    find_best_model()), builds the GStreamer pipeline string (camera
+    source split via `tee` into an AI-inference branch feeding Hailo
+    detection, and a network-streaming branch encoding H.264 over RTP to
+    the ground station), and starts three daemon threads: one running the
+    GStreamer pipeline (run_gstreamer), one running the TCP command server
+    (run_command_server), and one running the MAVSDK drone control loop
+    (run_drone_control). The main thread then polls
+    app_state.gst_error_event once per second until it is set or a
+    KeyboardInterrupt occurs, at which point all stop events are set, the
+    GLib main loop is quit, threads are joined with a 3-second timeout
+    each, the UDP telemetry socket is closed, and the process exits.
 
+    Returns:
+        None: This function does not return; it calls sys.exit(0) at the
+            end of its finally block.
+
+    Raises:
+        SystemExit: Raised (via sys.exit(1)) if the Hailo post-process
+            shared library is not found at the expected path.
+    '''
     Gst.init(None)
     main_loop = GLib.MainLoop()
-
     print("Initializing drone object tracker...")
-
     app_state = AppState()
     drone_controller = DroneCommandController()
 
     # --- Post-process library location ---
     postprocess_so = "/usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes/libyolo_hailortpp_post.so"
-
     if not Path(postprocess_so).exists():
         print(f"ERROR: Post-process library not found at {postprocess_so}")
         print("Please check your Hailo TAPPAS installation")
         sys.exit(1)
-
     print(f"Using post-process library: {postprocess_so}")
 
     # --- Find model ---
     script_dir = Path(__file__).resolve().parent  # Define script directory
-
-    
     model_path = find_best_model()
 
     def QUEUE(name, max_size_buffers=3, leaky="downstream"):
-        """Create a leaky queue to prevent blocking"""
+        '''
+        Builds a GStreamer `queue` element description string configured to
+        drop buffers (rather than block the pipeline) once its buffer limit is
+        reached, used to keep the AI and network branches of the pipeline from
+        stalling each other.
+
+        Args:
+            name (str): Value for the queue element's `name` property, used to
+                identify it in the pipeline description.
+            max_size_buffers (int): Value for the queue's `max-size-buffers`
+                property; `max-size-bytes` and `max-size-time` are always set
+                to 0 (unlimited) so only the buffer count limit applies.
+                Defaults to 3.
+            leaky (str): Value for the queue's `leaky` property, controlling
+                which end drops buffers when full (e.g. "downstream").
+                Defaults to "downstream".
+
+        Returns:
+            str: A `queue name=... leaky=... max-size-buffers=... ...`
+                GStreamer pipeline fragment, terminated with " ! " so it can
+                be concatenated directly into a larger pipeline description.
+        '''
         return f"queue name={name} leaky={leaky} max-size-buffers={max_size_buffers} max-size-bytes=0 max-size-time=0 ! "
 
     pipeline_str = (
@@ -96,34 +135,27 @@ def main():
     ]
     for t in threads:
         t.start()
-
     try:
         while True:
             if app_state.gst_error_event.is_set():
                 print("Main thread: Error detected, exiting...")
                 break
             time.sleep(1)
-
     except KeyboardInterrupt:
         print("\nShutdown requested by user (Ctrl+C)...")
-
     finally:
         print("Shutting down...")
-
         app_state.gst_error_event.set()
         app_state.command_thread_stop_event.set()
         app_state.control_loop_stop_event.set()
         app_state.data_sender_stop_event.set()
-
         if main_loop.is_running():
             print("Quitting GLib main loop...")
             main_loop.quit()
-
         # TTL for thread joining to prevent hanging indefinitely
         print("Waiting for threads to join...")
         for t in threads:
             t.join(timeout=3)
-
         """        
         gst_thread.join(timeout=3)
         command_thread.join(timeout=2)

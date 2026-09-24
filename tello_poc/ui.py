@@ -11,6 +11,42 @@ COLOR_TARGET = (0, 80, 255) # Red bounding box for selected target
 COLOR_HUD = (240, 240, 240) # White HUD text
 
 def draw_overlay(frame, tracked, target_id, state, battery, command_str=""):
+    '''
+    Draws the Tello POC's on-frame HUD: a bounding box, ID/label/confidence
+    tag, and (for the current target) a crosshair marker for every tracked
+    object; a timestamp; a status line (state, target, battery, key
+    hints); the current command string if non-empty; and, depending on
+    `state`, either a manual-controls legend (MANUAL) or a "clear target"
+    hint (TRACKING with a real target selected).
+
+    If target_id is None, it is displayed as the string 'none' for the
+    status line. If tracked is None, it is replaced with a single
+    placeholder entry ({0: {}}) whose bbox is None, which is then skipped
+    by the per-object drawing loop (so no boxes are drawn in that case).
+    Entries in tracked whose 'bbox' is None are skipped.
+
+    Args:
+        frame (numpy.ndarray): The BGR video frame (OpenCV format) to draw
+            onto; mutated in place and also returned.
+        tracked (dict | None): Mapping of object ID to tracked-object info
+            dict (expected keys: 'bbox', 'label', 'confidence', and, for
+            the target, 'centroid'). None is treated as an empty
+            placeholder.
+        target_id: ID of the currently selected target (or None/'none' for
+            no target), used to choose highlight color and draw the
+            crosshair.
+        state (str): Current drone state machine value (e.g. "MANUAL",
+            "TRACKING"), shown in the HUD and used to decide which
+            control-hint text to show.
+        battery (int): Current battery percentage, shown in the HUD.
+        command_str (str): Current RC command summary string to display at
+            the bottom of the frame; nothing is drawn for this if empty.
+            Defaults to "".
+
+    Returns:
+        numpy.ndarray: The same frame object passed in, with all overlay
+            drawing applied in place.
+    '''
     if target_id is None:
         target_id = 'none'
         
@@ -99,7 +135,46 @@ def draw_overlay(frame, tracked, target_id, state, battery, command_str=""):
     return frame
 
 def make_mouse_callback(app_state):
+    '''
+    Builds and returns an OpenCV mouse-callback function (closing over
+    app_state) suitable for cv2.setMouseCallback(), which selects a
+    tracked object as the target on left-button click, or clears the
+    target if the click misses every tracked bounding box.
+
+    Args:
+        app_state (AppState): Shared application state the returned
+            callback will read/update (tracked, tracker_lock, target_id,
+            target_lock, drone_state, state_lock).
+
+    Returns:
+        Callable[[int, int, int, int, object], None]: A callback matching
+            OpenCV's mouse-callback signature (event, x, y, flags, param),
+            for use with cv2.setMouseCallback().
+    '''
     def on_mouse(event, x, y, flags, param):
+        '''
+        OpenCV mouse-callback handler (returned by make_mouse_callback).
+        Ignores every event except a left-button-down click. On a qualifying
+        click, takes a snapshot of app_state.tracked and, in iteration order,
+        selects the first object whose bbox contains (x, y) as the new target
+        -- setting app_state.target_id to that object's ID and
+        app_state.drone_state to "TRACKING". If no object's bbox contains the
+        click, clears app_state.target_id to None and sets
+        app_state.drone_state to "MANUAL" instead.
+
+        Args:
+            event (int): OpenCV mouse event type constant; only
+                cv2.EVENT_LBUTTONDOWN is handled.
+            x (int): X-coordinate of the mouse event, in frame pixel space.
+            y (int): Y-coordinate of the mouse event, in frame pixel space.
+            flags (int): OpenCV event flags; unused.
+            param: OpenCV callback user-data parameter; unused.
+
+        Returns:
+            None: This function does not return a value; it updates
+                app_state.target_id and app_state.drone_state as side
+                effects.
+        '''
         if event != cv2.EVENT_LBUTTONDOWN:
             return
         with app_state.tracker_lock:
@@ -119,10 +194,3 @@ def make_mouse_callback(app_state):
             logging.info("Target cleared.")
             return
     return on_mouse
-                
-        
-        
-        
-        
-        
-        

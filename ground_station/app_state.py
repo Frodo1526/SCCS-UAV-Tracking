@@ -2,8 +2,19 @@ import threading
 
 class AppState:
     """Manages shared state between GStreamer and UI threads"""
-   
     def __init__(self):
+        '''
+        Constructs the shared mutable state used across the ground_station
+        subsystem's threads (GStreamer video receiver, telemetry data
+        receiver, and the Pygame UI/main loop): the most recent decoded video
+        frame, the most recent tracking-data list, the last mouse click
+        position, the currently selected target ID, stop/error events for the
+        background threads, and a set of threading.Lock objects guarding each
+        piece of shared state.
+
+        Returns:
+            None: This function does not return a value.
+        '''
         self.pygame_frame = None                        # The most recent numpy frame
         self.tracking_data = []                         # The most recent tracking data
         self.last_click_pos = None                      # (x, y) tuple of the last click

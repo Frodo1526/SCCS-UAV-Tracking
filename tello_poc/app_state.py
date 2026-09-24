@@ -5,7 +5,22 @@ import time
 from common.sccs_common.centroid_tracker import CentroidTracker
 
 class AppState:
-    def __init__ (self):
+    def __init__(self):
+        '''
+        Constructs the shared mutable state for the Tello proof-of-concept
+        subsystem: a CentroidTracker instance configured for this subsystem,
+        the selected target ID, current drone state machine value, the latest
+        video frame and its timestamp, the latest tracked-object snapshot,
+        HOVERING/RETURNING timer timestamps, the process start time, sets used
+        to track currently- and recently-pressed manual-control keys, the
+        current command display string, a set of threading.Lock objects
+        guarding each piece of shared state, stop events for the main and
+        control loops, whether the drone is currently airborne, and the last
+        known battery percentage.
+
+        Returns:
+            None: This function does not return a value.
+        '''
         self.tracker = CentroidTracker(
             max_disappeared=20,
             tight_distance_ratio=0.08,

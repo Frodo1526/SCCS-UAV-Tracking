@@ -16,9 +16,35 @@ from video import run_gstreamer_receiver
 from ui import handle_input, render_graphics
 
 def main():
-    """
-    Main entry point
-    """
+    '''
+    Entry point for the ground_station subsystem. Initializes GStreamer
+    and a GLib main loop, constructs the shared AppState, and starts two
+    daemon threads: one receiving and decoding the incoming video stream
+    (run_gstreamer_receiver) and one receiving and reassembling telemetry
+    data (run_data_receiver). Initializes Pygame (choosing an SDL video
+    driver appropriate to the host OS) and opens a resizable display
+    window and clock/fonts for the UI.
+
+    Runs the main Pygame event/render loop until the user quits or an
+    error occurs: each iteration it checks app_state.gst_error_event,
+    takes thread-safe local copies of the current frame, tracking data,
+    and target ID, dispatches Pygame events via ui.handle_input(), resizes
+    the window if the incoming frame's dimensions changed, renders via
+    ui.render_graphics(), and caps the loop at 60 FPS.
+
+    On shutdown (loop exit, KeyboardInterrupt, or error), sets the
+    gst_error_event and data_thread_stop_event, quits the GLib main loop
+    if running, joins both background threads with a timeout, quits
+    Pygame, and exits the process.
+
+    Returns:
+        None: This function does not return; it calls sys.exit(0) at the
+            end of its finally block.
+
+    Raises:
+        SystemExit: Raised (via sys.exit(1)) if Pygame fails to
+            initialize.
+    '''
    
     # Init GStreamer and GLib main loop
     Gst.init(None)

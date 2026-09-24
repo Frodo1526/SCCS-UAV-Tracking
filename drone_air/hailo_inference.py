@@ -20,57 +20,134 @@ script_dir = Path(__file__).parent
 logging.basicConfig(filename = './app.log', level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 def find_best_model():
-        """Find the best available COCO detection model for this device"""
+    '''
+    Locates the best available Hailo COCO-detection model file (.hef) for
+    the connected device, by detecting whether the device is a Hailo-8L or
+    Hailo-8 accelerator and then searching a prioritized list of candidate
+    model filenames across a prioritized list of search directories
+    (the user's hailo-rpi5-examples resources directory, the system Hailo
+    model directory, and this script's own directory).
 
-        # Detect Hailo architecture
-        import subprocess
-        is_hailo8l = True  # Default assumption
-        try:
-            result = subprocess.run(['hailortcli', 'fw-control', 'identify'],
-                                  capture_output=True, text=True, timeout=5)
-            is_hailo8l = 'HAILO8L' in result.stdout
-            arch_name = "Hailo-8L (13 TOPS)" if is_hailo8l else "Hailo-8 (26 TOPS)"
-            logging.info(f"Detected device: {arch_name}")
-        except Exception as e:
-            logging.error(f"Could not detect architecture, assuming Hailo-8L: {e}")
+    Device detection runs `hailortcli fw-control identify` and checks
+    whether "HAILO8L" appears in its output; if the subprocess call fails
+    for any reason, the device is assumed to be a Hailo-8L and the error
+    is logged.
 
-        # Choose appropriate models for architecture
-        if is_hailo8l:
-            model_priority = [
-                # Try rpicam-apps models first (these work!)
-                "/usr/share/hailo-models/yolov8s_h8l.hef",
-                "/usr/share/hailo-models/yolov6n_h8l.hef",
-                # Try downloaded models
-                str(Path.home() / "hailo_models_8l/yolov8s_h8l.hef"),
-                # Try hailo-rpi5-examples (these might be wrong architecture)
-                "yolov8s.hef",
-                "yolov6n.hef",
-                "yolov5s.hef",
-            ]
-        else:  # Hailo-8
-            model_priority = [
-                "yolov8m.hef",
-                "yolov8s.hef",
-            ]
+    Returns:
+        pathlib.Path: The path to the first matching model file found,
+            checked in search-directory-major, model-priority-minor order.
 
-        search_paths = [
-            Path.home() / "hailo-rpi5-examples/resources",
-            Path("/usr/share/hailo-models"),
-            script_dir,
+    Raises:
+        SystemExit: If no candidate model file exists in any of the search
+            paths (via sys.exit(1)), after logging an error and a hint to
+            run the Hailo example resource-download script.
+    '''
+    # Detect Hailo architecture
+    import subprocess
+    is_hailo8l = True  # Default assumption
+    try:
+        result = subprocess.run(['hailortcli', 'fw-control', 'identify'],
+                                capture_output=True, text=True, timeout=5)
+        is_hailo8l = 'HAILO8L' in result.stdout
+        arch_name = "Hailo-8L (13 TOPS)" if is_hailo8l else "Hailo-8 (26 TOPS)"
+        logging.info(f"Detected device: {arch_name}")
+    except Exception as e:
+        logging.error(f"Could not detect architecture, assuming Hailo-8L: {e}")
+
+    # Choose appropriate models for architecture
+    if is_hailo8l:
+        model_priority = [
+            # Try rpicam-apps models first (these work!)
+            "/usr/share/hailo-models/yolov8s_h8l.hef",
+            "/usr/share/hailo-models/yolov6n_h8l.hef",
+            # Try downloaded models
+            str(Path.home() / "hailo_models_8l/yolov8s_h8l.hef"),
+            # Try hailo-rpi5-examples (these might be wrong architecture)
+            "yolov8s.hef",
+            "yolov6n.hef",
+            "yolov5s.hef",
+        ]
+    else:  # Hailo-8
+        model_priority = [
+            "yolov8m.hef",
+            "yolov8s.hef",
         ]
 
-        for path in search_paths:
-            for model_name in model_priority:
-                model_path = path / model_name
-                if model_path.exists():
-                    logging.info(f"Found model: {model_path}")
-                    return model_path
+    search_paths = [
+        Path.home() / "hailo-rpi5-examples/resources",
+        Path("/usr/share/hailo-models"),
+        script_dir,
+    ]
 
-        logging.error("ERROR: No compatible model found!")
-        logging.info("Run: cd ~/hailo-rpi5-examples && ./download_resources.sh --all")
-        sys.exit(1)
+    for path in search_paths:
+        for model_name in model_priority:
+            model_path = path / model_name
+            if model_path.exists():
+                logging.info(f"Found model: {model_path}")
+                return model_path
 
-def on_new_hailo_sample(appsink, app_state): 
+    logging.error("ERROR: No compatible model found!")
+    logging.info("Run: cd ~/hailo-rpi5-examples && ./download_resources.sh --all")
+    sys.exit(1)
+
+def on_new_hailo_sample(appsink, app_state):
+    '''
+    GStreamer 'new-sample' callback for the Hailo-postprocessed appsink.
+    Pulls the newest frame/metadata sample, extracts Hailo object
+    detections, filters and rescales them, updates the shared
+    CentroidTracker, and sends the resulting tracked-object snapshot to
+    the ground station over UDP.
+
+    Per invocation, this function:
+      1. Increments app_state.frame_count and periodically logs progress.
+      2. Pulls the sample and its buffer; returns early (Gst.FlowReturn.OK)
+         if either is unavailable.
+      3. Reads the buffer's actual width/height from its GStreamer caps and
+         maps it into a (height, width, 3) uint8 numpy array (a copy, since
+         the buffer is unmapped afterward). This is the frame used only for
+         per-detection color sampling.
+      4. Records app_state.frame_width/frame_height as the fixed network
+         stream resolution (net_w, net_h = 1280, 720) the first time (or
+         whenever) they differ from the current values, under
+         app_state.frame_size_lock.
+      5. Extracts Hailo detections from the buffer's region-of-interest,
+         keeping only ones whose label is in a fixed allow-list ("car",
+         "truck", "bus", "motorbike", "person") and whose confidence is at
+         least MIN_CONFIDENCE. Each kept detection's normalized bbox is
+         converted into AI-inference-resolution (640x640) pixel
+         coordinates, a small patch around its centroid is sampled from
+         the mapped frame for its average color, then the bbox is rescaled
+         from AI resolution into the 1280x720 network-stream coordinate
+         space (scale_x/scale_y = net_w/ai_w, net_h/ai_h). Detections
+         smaller than MIN_BBOX_AREA (in network-stream pixels) or whose
+         rescaled bbox falls within EDGE_EXCLUSION_MARGIN pixels of any
+         frame edge are discarded. Any exception during this extraction is
+         caught and logged, leaving current_detections_info as whatever
+         was collected so far.
+      6. Depending on whether app_state.target_id is set, calls either
+         app_state.tracker.update_all_detections() (no target selected) or
+         app_state.tracker.update_target() (target selected) under
+         app_state.tracker_lock, producing a snapshot dict of tracked
+         objects to send.
+      7. Serializes the snapshot into a msgpack-encoded envelope
+         (sequence number, timestamp, and a list of plain-Python-typed
+         object dicts, each flagged with 'is_target'), and sends it via
+         send_telemetry_udp() to (GROUND_STATION_IP, DATA_PORT). Socket and
+         other exceptions during this step are caught and logged.
+
+    Args:
+        appsink: The GStreamer appsink element that emitted the signal;
+            used to pull the new sample.
+        app_state (AppState): Shared application state providing the
+            frame-size lock/fields, target ID, tracker (and its lock), UDP
+            socket, and outgoing sequence counter.
+
+    Returns:
+        Gst.FlowReturn: Always Gst.FlowReturn.OK, whether or not a sample,
+            buffer, or valid detections were available -- errors are
+            handled internally via logging rather than by changing the
+            return value.
+    '''
     app_state.frame_count = getattr(app_state, 'frame_count', 0) + 1
     if app_state.frame_count % 120 == 0:
         logging.info(f"Processing frame {app_state.frame_count}...")   
@@ -85,12 +162,9 @@ def on_new_hailo_sample(appsink, app_state):
     
     caps = sample.get_caps()
     structure = caps.get_structure(0)._StructureWrapper__structure
-    
     width = structure.get_int('width')[1]
     height = structure.get_int('height')[1]
-    
     net_w, net_h = 1280, 720
-    
     result, map_info = buffer.map(Gst.MapFlags.READ)
     if result: 
         frame = np.frombuffer(map_info.data, dtype=np.uint8)
@@ -99,21 +173,17 @@ def on_new_hailo_sample(appsink, app_state):
     else :
         logging.error("Failed to map buffer")
         return Gst.FlowReturn.OK
-        
-    
+
     with app_state.frame_size_lock:
         if app_state.frame_width != net_w or app_state.frame_height != net_h:
             app_state.frame_width = net_w
             app_state.frame_height = net_h
             logging.info(f"Detected frame size: {net_w}x{net_h}")
 
-
     current_detections_info = [] 
     try: #Get interest region and parse the region with the AI inference
         roi = hailo.get_roi_from_buffer(buffer)  # Region of interest as hailo.HailoROI object
         detections = roi.get_objects_typed(hailo.HAILO_DETECTION) # List of hailo.HailoDetection objects with methods like get_label(), get_confidence(), get_bbox()
-
-
         object_labels = ["car", "truck", "bus", "motorbike", "person"]
         
         # keeps detection if label and confidence meets criteria
@@ -121,13 +191,9 @@ def on_new_hailo_sample(appsink, app_state):
 
         #FIXME move to config file so we can tune settings easier
         # also incorporate confidence score 
-        
         ai_w, ai_h = 640, 640 # AI inference resolution
-        
         scale_x = net_w / ai_w
         scale_y = net_h / ai_h
-
-
         for det in filtered_detections:
             bbox_raw = det.get_bbox()
 
@@ -136,33 +202,27 @@ def on_new_hailo_sample(appsink, app_state):
             ymin_ai = int(bbox_raw.ymin() * ai_h)
             xmax_ai = int(bbox_raw.xmax() * ai_w)
             ymax_ai = int(bbox_raw.ymax() * ai_h)
-            
             centroid_ai = (int((xmin_ai + xmax_ai) / 2.0), int((ymin_ai + ymax_ai) / 2.0))
             cx_ai = np.clip(centroid_ai[0], 0, ai_w - 1)
             cy_ai = np.clip(centroid_ai[1], 0, ai_h - 1)
-            
             patch = frame[max(0, cy_ai - 3):cy_ai + 4, max(0, cx_ai -3): cx_ai +4]
             color = patch.mean(axis=(0,1))
-            
-            
+
             # Normalized cords for Network stream
             xmin = int(xmin_ai * scale_x)
             ymin = int(ymin_ai * scale_y)
             xmax = int(xmax_ai * scale_x)
             ymax = int(ymax_ai * scale_y)
-
             if (xmax - xmin) * (ymax - ymin) < MIN_BBOX_AREA:
                 continue
             
             EDGE_EXCLUSION_MARGIN = 60  # pixels, in 1280x720 space
-            
             if xmin < EDGE_EXCLUSION_MARGIN or xmax > (net_w - EDGE_EXCLUSION_MARGIN):
                 continue
             if ymin < EDGE_EXCLUSION_MARGIN or ymax > (net_h - EDGE_EXCLUSION_MARGIN):
                 continue
-            
+
             centroid = (int((xmin + xmax) / 2.0), int((ymin + ymax) / 2.0)) #centroid of detection
-            
             current_detections_info.append({
                 'bbox': (xmin, ymin, xmax, ymax),
                 'centroid': centroid, 

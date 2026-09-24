@@ -12,11 +12,37 @@ from data_cmd import VIDEO_STREAM_PORT
 # GStreamer Video Receiver Thread
 # -----------------------------------------------------------------------------------------------
 def run_gstreamer_receiver(app_state, main_loop):
-    """Run GStreamer in separate thread to receive and display video"""
-   
+    '''
+    Builds and runs the ground station's GStreamer receive pipeline: reads
+    the incoming H.264-over-RTP UDP stream on VIDEO_STREAM_PORT through a
+    jitter buffer, decodes it, scales/converts it to RGB, and exposes
+    decoded frames via an `appsink` whose 'new-sample' signal is connected
+    to on_new_video_sample(). Runs the given GLib main loop once the
+    pipeline starts.
+
+    A nested `on_message` bus handler logs GStreamer errors and warnings,
+    setting app_state.gst_error_event and quitting main_loop on an ERROR
+    message.
+
+    Args:
+        app_state (AppState): Shared application state; passed through to
+            on_new_video_sample() and used to signal errors via
+            gst_error_event.
+        main_loop (GLib.MainLoop): The GLib main loop to run once the
+            pipeline is playing.
+
+    Returns:
+        None: This function does not return a value. app_state.gst_error_event
+            is set in the finally block regardless of how the pipeline exits,
+            and the pipeline is set to the NULL state if it was created.
+
+    Raises:
+        RuntimeError: Internally raised and caught (not propagated) if the
+            pipeline has no element named "appsink"; an error is logged and
+            app_state.gst_error_event is still set via the finally block.
+    '''
     # HEVC is more efficent, but I do not know technical specifics
     # Could be that it's difficult to implement or more computationally intensive on one end. 
-
     # This pipeline receives the H.264 stream, decodes it, and sends it to our app
     # FIXED: Added proper jitter buffer, timestamps, and latency management
     pipeline_str = ( 
@@ -31,28 +57,40 @@ def run_gstreamer_receiver(app_state, main_loop):
         "appsink name=appsink emit-signals=true sync=false max-buffers=1 drop=true"  # Drop old frames aggressively
     )
    
-    """  Notes for pipeline tuning and testing:
-   
-        max-buffers=1 + drop=true ensures your UI always shows the latest frame but sacrifices smoothness; 
-        increase max-buffers or remove drop=true for smoother playback if latency budget allows.
-        The caps must match the sender's RTP parameters; mismatches (payload type, resolution, framerate) 
-        can break decoding or require extra negotiation.
-        If debugging stream issues, temporarily raise rtpjitterbuffer latency (e.g., 100-200 ms) 
-        to see if artifacts are jitter-related.
+    """
+    Notes for pipeline tuning and testing:
+    max-buffers=1 + drop=true ensures your UI always shows the latest frame but sacrifices smoothness; 
+    increase max-buffers or remove drop=true for smoother playback if latency budget allows.
+    The caps must match the sender's RTP parameters; mismatches (payload type, resolution, framerate) 
+    can break decoding or require extra negotiation.
+    If debugging stream issues, temporarily raise rtpjitterbuffer latency (e.g., 100-200 ms) 
+    to see if artifacts are jitter-related.
         
     """
 
-#need to make pipeine string robust and variable if network conditions change.
-
+    #need to make pipeine string robust and variable if network conditions change.
     pipeline = None
     try:
         pipeline = Gst.parse_launch(pipeline_str)
        
-       # Bus message handler for GStreamer errors and warnings
+        # Bus message handler for GStreamer errors and warnings
         bus = pipeline.get_bus()
         bus.add_signal_watch()
-
         def on_message(bus, message):
+            '''
+            GStreamer bus message handler for the ground station's receive
+            pipeline. On an ERROR message, logs the error, sets
+            app_state.gst_error_event, and quits main_loop. On a WARNING message,
+            logs the warning without stopping the pipeline.
+
+            Args:
+                bus (Gst.Bus): The message bus that emitted the message (unused
+                    beyond signal-connection identity).
+                message (Gst.Message): The bus message to handle.
+
+            Returns:
+                None: This function does not return a value.
+            '''
             t = message.type
             if t == Gst.MessageType.ERROR:
                 err, debug = message.parse_error()
@@ -64,7 +102,6 @@ def run_gstreamer_receiver(app_state, main_loop):
                 logging.warning(f"GStreamer WARNING: {err}, {debug}")
         
         bus.connect("message", on_message)
-
         appsink = pipeline.get_by_name("appsink")
         if not appsink:
             logging.error("ERROR: Could not find 'appsink' element in pipeline.")
@@ -91,7 +128,26 @@ def run_gstreamer_receiver(app_state, main_loop):
 
 
 def on_new_video_sample(appsink, app_state):
-    """Callback for the appsink 'new-sample' signal (from GStreamer thread)"""
+    '''
+    GStreamer 'new-sample' callback for the ground station's video
+    appsink. Pulls the newest decoded RGB frame, wraps its raw buffer in a
+    numpy array using the width/height reported by the sample's caps, and
+    stores a copy of it in app_state.pygame_frame for the UI thread to
+    render (a copy is required because the original buffer is unmapped
+    immediately after).
+
+    Args:
+        appsink: The GStreamer appsink element that emitted the signal;
+            used to pull the new sample.
+        app_state (AppState): Shared application state; pygame_frame is
+            updated under app_state.frame_lock.
+
+    Returns:
+        Gst.FlowReturn: Always Gst.FlowReturn.OK -- if no sample or buffer
+            is available, or if mapping/processing the buffer raises an
+            exception (caught and logged), the function still returns OK
+            without updating app_state.pygame_frame.
+    '''
    
     sample = appsink.emit('pull-sample')
     if not sample:
@@ -113,12 +169,7 @@ def on_new_video_sample(appsink, app_state):
         (result, map_info) = buffer.map(Gst.MapFlags.READ)
         if result:
              # Create a numpy array that shares memory with the GStreamer buffer
-            numpy_frame = np.ndarray(
-                (height, width, 3),
-                buffer=map_info.data,
-                dtype=np.uint8
-            )
-           
+            numpy_frame = np.ndarray((height, width, 3), buffer=map_info.data, dtype=np.uint8)
             # Update frame for pygame (thread-safe)
             with app_state.frame_lock:
                 # We must copy() the frame, otherwise it becomes invalid

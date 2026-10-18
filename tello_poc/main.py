@@ -4,15 +4,17 @@ import cv2
 import time
 import sys
 from ultralytics import YOLO
-from collections import OrderedDict
+
 import logging
 import signal
 
+import app_state
+import ui
 from app_state import AppState
 from ui import make_mouse_callback, draw_overlay
 from yolov8_inference import run_inference_loop
 from ctrl import run_control_loop
-
+from pynput import keyboard
 
 logging.basicConfig(filename = './app.log', level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
@@ -27,24 +29,9 @@ YOLO_MODEL = 'yolov8s.pt'
 # OpenCV window name
 WINDOW_NAME = 'Tello POC'
 
+
 def battery_refresh_loop(tello, app_state):
-    '''
-    Background loop that polls the Tello's battery percentage every 30
-    seconds and stores it in app_state.battery, so the display thread
-    doesn't have to block on the (slower) battery query itself. Runs
-    until app_state.stop_event is set. Failures to query the battery are
-    logged as warnings and do not stop the loop.
-
-    Args:
-        tello (djitellopy.Tello): Tello SDK client used to query battery
-            level.
-        app_state (AppState): Shared application state; battery is
-            updated under app_state.battery_lock.
-
-    Returns:
-        None: This function does not return a value; it runs until
-            app_state.stop_event is set.
-    '''
+    """Periodically refresh battery status on a separate thread to avoid blocking display."""
     battery = 100
     while not app_state.stop_event.is_set():
         try:
@@ -57,55 +44,6 @@ def battery_refresh_loop(tello, app_state):
             logging.warning(f"Couldn't refresh battery: {e}")
     
 def main():
-    '''
-    Entry point for the Tello proof-of-concept subsystem. Loads the YOLOv8
-    model, connects to the Tello, checks/logs its battery, starts the
-    video stream, waits (up to a 10-second timeout) for the first frame to
-    arrive, and constructs the shared AppState. Opens an OpenCV display
-    window with a mouse callback for target selection (via
-    ui.make_mouse_callback()), and starts the battery-refresh thread and
-    the YOLO inference thread (yolov8_inference.run_inference_loop) as
-    daemons, waiting for the first tracked frame before entering the main
-    loop.
-
-    In the main loop, each iteration: takes thread-safe local copies of
-    the current frame, drone_state, target_id, tracked-object snapshot,
-    battery level, and command string; periodically logs a status line;
-    draws the HUD/overlay via ui.draw_overlay() (falling back to the raw
-    frame if overlay drawing failed) and displays it in the OpenCV window;
-    warns if the video stream appears stalled (no new frame in over 3
-    seconds); and handles keyboard input:
-      - T: if not airborne, starts a background thread that calls
-        tello.takeoff(), starts a new control-loop thread
-        (ctrl.run_control_loop), and marks the drone airborne.
-      - L: starts a background thread that signals the control loop to
-        stop, forces drone_state back to "MANUAL" and clears target_id,
-        briefly sleeps, then calls tello.land() and marks the drone not
-        airborne.
-      - C: clears the target and forces drone_state to "MANUAL"
-        immediately (synchronously, on the main thread).
-      - Q / Esc: breaks out of the main loop.
-    Additionally tracks which of the WASD/RF manual-control keys are
-    currently held, using a per-key "age" counter so a key is treated as
-    released only after ~6 consecutive frames (about 200ms) without being
-    seen again, to avoid jittery stop/start behavior; pressing one of an
-    opposing pair (e.g. W vs S) immediately clears the other.
-
-    On exit (normal Q/Esc, or KeyboardInterrupt), sends a final zero RC
-    command, sets app_state.stop_event, joins any takeoff/land/control
-    threads and the inference thread (with timeouts), lands the drone if
-    still airborne (temporarily ignoring SIGINT while doing so), stops the
-    video stream, ends the Tello connection, destroys the OpenCV window,
-    and exits.
-
-    Returns:
-        None: This function does not return; it calls sys.exit(0) at the
-            end of its finally block.
-
-    Raises:
-        SystemExit: Raised (via sys.exit(1)) if no video frame arrives
-            from the Tello within the 10-second startup timeout.
-    '''
     logging.info("Loading YOLOv8 model...")
     model = YOLO(YOLO_MODEL)
     logging.info(f"{YOLO_MODEL} loaded successfully!")
@@ -143,42 +81,61 @@ def main():
     
     cv2.namedWindow(WINDOW_NAME)
     cv2.setMouseCallback(WINDOW_NAME, make_mouse_callback(app_state))
-    
+
+
+
     # Start battery refresh thread (non-blocking)
     battery_thread = threading.Thread(
         target=battery_refresh_loop, args=(tello, app_state), daemon=True
     )
     battery_thread.start()
-    
+
     inference_thread = threading.Thread(
         target=run_inference_loop, args=(model, frame_read, app_state, FRAME_WIDTH, FRAME_HEIGHT),
         daemon=True
     )
-    
+
+
     inference_thread.start()
-    
+
+    app_state.frame = tello.get_frame_read().frame
+
     while app_state.frame is None:
+
         time.sleep(0.1)
-    
+
+    # bfrost 9/29
+    ui_thread = threading.Thread(
+        target=ui.draw_overlay, args=(tello, app_state,), daemon=True
+    )
+    ui_thread.start()
+
+    # bfrost
+    on_press, on_release = make_keyboard_callbacks(app_state)
+
+    listener = keyboard.Listener(
+        on_press=on_press,
+        on_release=on_release
+    )
+
+    listener.start()
+
     logging.info(f"Running. T=takeoff, L=land, C=clear target, Q=Quit. Click box to track. WASD=move, RF=up/down")
-    
+
     takeoff_thread = None
     land_thread = None
     control_thread = None
     
     try:
         while True:
-            with app_state.frame_lock:
-                frame = app_state.frame
+
+
             with app_state.state_lock:
                 state = app_state.drone_state
                 
             with app_state.target_lock:
                 current_target = app_state.target_id
-                
-            with app_state.tracker_lock:
-                tracked_snapshot = OrderedDict(app_state.tracked)
-            
+
             with app_state.battery_lock:
                 battery = app_state.battery
             
@@ -187,37 +144,32 @@ def main():
             
             if time.time() - app_state.start_time % 10 < 0.1:  # Log status every 10 seconds
                 logging.info(f"[10s Check] State: {state}, Target: {current_target}, Battery: {battery}%, Command: {cmd_str}")
-            
-            display = draw_overlay(frame.copy(), tracked_snapshot, current_target, state, battery, cmd_str)
+
+            with app_state.display_lock: # Bfrost 9.29
+                display = app_state.display # Bfrost 9.29
 
             if display is None:
                 logging.warning("Overlay skipped due to error.")
-                display = frame.copy()
-                
+                display = app_state.frame.copy()
+
             if time.time() - app_state.last_frame_time > 3.0:
                 logging.warning("Video stream stalled...")
-                
+
+
             cv2.imshow(WINDOW_NAME, display)
-            
-            key = cv2.waitKey(1) & 0xFF
-            
-            if key == ord('t') or key == ord('T'):
+            cv2.waitKey(1)
+
+            key = app_state.pressed_keys
+
+            if 't' in key or 'T' in key: #bfrost
                 if not app_state.airborne:
                     def do_takeoff():
-                        '''
-                        Background-thread helper for the T (takeoff) key: clears
-                        app_state.control_stop if it was set (so a fresh control loop will
-                        actually run), commands the Tello to take off, starts a new
-                        ctrl.run_control_loop() thread, and marks app_state.airborne = True.
-                        Any exception during takeoff is caught and logged rather than
-                        propagated (in which case app_state.airborne is left unset).
-
-                        Returns:
-                            None: This function does not return a value; it mutates
-                                app_state and the enclosing scope's control_thread variable
-                                (via closure) as side effects.
-                        '''
                         try:
+
+                            with app_state.keys_lock:
+                                app_state.pressed_keys.discard('t')
+                                app_state.pressed_keys.discard('T')
+
                             if app_state.control_stop.is_set():
                                 app_state.control_stop.clear()  # Ensure control loop is running
                             logging.info("Takeoff.")
@@ -233,22 +185,14 @@ def main():
                             logging.error(f"Takeoff error: {e}")
                     takeoff_thread = threading.Thread(target=do_takeoff, daemon=True)
                     takeoff_thread.start()
-                    
-            elif key == ord('l') or key == ord('L'):
-                def land_tello():
-                    '''
-                    Background-thread helper for the L (land) key: signals the control
-                    loop to stop sending RC commands (app_state.control_stop), forces
-                    drone_state to "MANUAL" and clears the target, briefly sleeps to let
-                    the control loop actually stop, then commands the Tello to land and
-                    marks app_state.airborne = False. Any exception during landing is
-                    caught and logged rather than propagated.
 
-                    Returns:
-                        None: This function does not return a value; it mutates
-                            app_state as a side effect.
-                    '''
+            elif 'l' in key or 'L' in key: #bfrost
+                def land_tello():
                     try:
+                        with app_state.keys_lock:
+                            app_state.pressed_keys.discard('l')
+                            app_state.pressed_keys.discard('L')
+
                         app_state.control_stop.set()  # Signal control loop to stop sending commands
                         # Stop the control loop from sending tracking commands
                         with app_state.state_lock:
@@ -258,67 +202,52 @@ def main():
                         # Give control loop time to stop sending RC commands
                         time.sleep(0.2)
                         logging.info("Landing.")
+
+
                         tello.land()
                         app_state.airborne = False
                     except Exception as e:
                         logging.error(f"Landing error (171): {e}")
                 land_thread = threading.Thread(target=land_tello, daemon=True)
                 land_thread.start()
-                    
-            elif key == ord('c') or key == ord('C'):
+
+            elif 'c' in key or 'C' in key: #bfrost
                 with app_state.target_lock:
                     app_state.target_id = None
                 with app_state.state_lock:
                     app_state.drone_state = "MANUAL"
                 logging.info("Target cleared.")
-                
-            elif key == ord('q') or key == 27:
+
+            elif 'q' in key or 'Q' in key: #bfrost
                 logging.info("Quitting...")
                 break
-            
+
             # Track pressed keys for manual control with age-based removal
             # Keys persist for 6 frames (200ms) after release to prevent jittery stopping
             with app_state.keys_lock:
-                VALID_KEYS = (ord('W'), ord('w'), ord('S'), ord('s'), 
-                             ord('A'), ord('a'), ord('D'), ord('d'),
-                             ord('R'), ord('r'), ord('F'), ord('f'))
+                VALID_KEYS = set("WwSsAaDdRrFf")
                 KEY_RELEASE_THRESHOLD = 6  # Frames before removing a released key
-                
+
                 # Add newly pressed key to the set and reset its age
-                if key != 255 and key != -1 and key in VALID_KEYS:
-                    app_state.pressed_keys.add(key)
-                    app_state.key_ages[key] = 0
-                    
-                    # Remove conflicting keys (e.g., if W pressed, remove S)
-                    if key in (ord('W'), ord('w')):
-                        app_state.pressed_keys.discard(ord('S'))
-                        app_state.pressed_keys.discard(ord('s'))
-                    elif key in (ord('S'), ord('s')):
-                        app_state.pressed_keys.discard(ord('W'))
-                        app_state.pressed_keys.discard(ord('w'))
-                    elif key in (ord('A'), ord('a')):
-                        app_state.pressed_keys.discard(ord('D'))
-                        app_state.pressed_keys.discard(ord('d'))
-                    elif key in (ord('D'), ord('d')):
-                        app_state.pressed_keys.discard(ord('A'))
-                        app_state.pressed_keys.discard(ord('a'))
-                    elif key in (ord('R'), ord('r')):
-                        app_state.pressed_keys.discard(ord('F'))
-                        app_state.pressed_keys.discard(ord('f'))
-                    elif key in (ord('F'), ord('f')):
-                        app_state.pressed_keys.discard(ord('R'))
-                        app_state.pressed_keys.discard(ord('r'))
-                
-                # Increment ages for all tracked keys (whether still held or released)
-                for k in list(app_state.key_ages.keys()):
-                    app_state.key_ages[k] += 1
-                
-                # Remove keys that have been released for too long
-                keys_to_remove = [k for k, age in app_state.key_ages.items() 
-                                 if age >= KEY_RELEASE_THRESHOLD]
-                for k in keys_to_remove:
-                    app_state.pressed_keys.discard(k)
-                    del app_state.key_ages[k]
+                # Remove conflicting keys (e.g., if W pressed, remove S)
+                if 'w' in key or 'W' in key:
+                    app_state.pressed_keys.discard(ord('S'))
+                    app_state.pressed_keys.discard(ord('s'))
+                elif 's' in key or 'S' in key:
+                    app_state.pressed_keys.discard(ord('W'))
+                    app_state.pressed_keys.discard(ord('w'))
+                elif 'a' in key or 'A' in key:
+                    app_state.pressed_keys.discard(ord('D'))
+                    app_state.pressed_keys.discard(ord('d'))
+                elif 'd' in key or 'D' in key:
+                    app_state.pressed_keys.discard(ord('A'))
+                    app_state.pressed_keys.discard(ord('a'))
+                elif 'r' in key or 'R' in key:
+                    app_state.pressed_keys.discard(ord('F'))
+                    app_state.pressed_keys.discard(ord('f'))
+                elif 'f' in key or 'F' in key:
+                    app_state.pressed_keys.discard(ord('R'))
+                    app_state.pressed_keys.discard(ord('r'))
             
             
     except KeyboardInterrupt:
@@ -363,6 +292,26 @@ def main():
         cv2.destroyAllWindows()
         logging.info("Done.")
         sys.exit(0)
+
+
+# bfrost
+def make_keyboard_callbacks(app_state):
+
+    def on_press(key):
+        try:
+            with app_state.keys_lock:
+                app_state.pressed_keys.add(key.char)
+        except AttributeError:
+            pass
+
+    def on_release(key):
+        try:
+            with app_state.keys_lock:
+                app_state.pressed_keys.discard(key.char)
+        except AttributeError:
+            pass
+
+    return on_press, on_release
 
 if __name__ == "__main__":
     main()

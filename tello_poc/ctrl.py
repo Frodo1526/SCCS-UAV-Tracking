@@ -5,9 +5,10 @@ import time
 logging.basicConfig(filename = './app.log', level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 # Control gains adapted from droneControl's DroneCommandController
-YAW_GAIN = 1.5 # error_x (px) -> yaw_rate (deg/s)
+YAW_GAIN = 1 # error_x (px) -> yaw_rate (deg/s)
 UP_DOWN_GAIN = -1.5 # error_y (px) -> vertical_vel (cm/s)
 FORWARD_GAIN = 1.4 # area_error (px^2) -> forward_vel (cm/s)
+
 GOAL_AREA_RATIO = 0.05 # target bbox area as fraction of frame area
 
 MAX_YAW_RATE = 100 # deg/s
@@ -24,42 +25,6 @@ FRAME_WIDTH = 960
 FRAME_HEIGHT = 720
 
 def compute_velocity_commands(target_data, frame_width, frame_height, app_state):
-    '''
-    Computes forward/vertical/yaw RC velocity commands (in the units and
-    scale expected by djitellopy's send_rc_control) that steer the Tello
-    to center on and maintain a target size for a tracked object's
-    bounding box.
-
-    If target_data has no 'bbox', returns a zero-command hover result.
-    Otherwise computes the target's centroid and area, the pixel errors
-    between the centroid and the frame center (ex, ey) and between the
-    bbox area and a goal area (ea, GOAL_AREA_RATIO of frame area), then
-    applies a deadband/edge-proximity suppression: if the target's
-    centroid is within DEADBAND_PX of the nearest vertical edge, ex is
-    zeroed; otherwise if it's within DEADBAND_PX of the nearest horizontal
-    edge, ey is zeroed; otherwise if the target is larger than the goal
-    area and within 2*DEADBAND_PX of either edge, ea is zeroed. (Only one
-    of these three branches can apply per call, since they are chained
-    with elif.) Additionally, ex and ey are independently zeroed outright
-    if their magnitude is already below DEADBAND_PX. Errors are then
-    normalized and scaled by fixed gains, clipped to MAX_YAW_RATE /
-    MAX_VERTICAL_VEL / MAX_FORWARD_VEL, and rounded to integers.
-
-    Args:
-        target_data (dict): Tracked target's detection info; must contain
-            'bbox' as (x1, y1, x2, y2) for a non-hover result.
-        frame_width (int): Width of the video frame in pixels.
-        frame_height (int): Height of the video frame in pixels.
-        app_state: Accepted for a consistent call signature but not read
-            or used anywhere in this function's body.
-
-    Returns:
-        tuple[int, int, int, str]: (fwd, vert, yaw, cmd_str) -- forward,
-            vertical, and yaw RC command values as rounded integers
-            (cm/s and deg/s respectively), and a human-readable summary
-            string. When target_data has no 'bbox', this is
-            (0, 0, 0, a "HOVER (no bbox)!" string) instead.
-    '''
     bbox = target_data.get('bbox')
     if bbox is None:
         return 0, 0, 0, "HOVER (no bbox)!"
@@ -107,31 +72,6 @@ def compute_velocity_commands(target_data, frame_width, frame_height, app_state)
     return round(fwd), round(vert), round(yaw), cmd_str # Return rounded integer commands for tello.send_rc_control, along with a string for logging
 
 def run_manual_control(tello, app_state):
-    '''
-    Sends one RC command to the Tello based on the set of currently
-    pressed manual-control keys (W/S for forward/backward, A/D for yaw
-    left/right, R/F for up/down), each contributing a fixed +/-60
-    magnitude; combinations are summed simply by which flags were set
-    (later checks for the same axis overwrite earlier ones, so opposite
-    keys pressed simultaneously resolve to whichever was checked last: S
-    overrides W, D overrides A, F overrides R). Returns immediately
-    without sending anything if app_state.stop_event or
-    app_state.control_stop is set. If the drone is airborne, updates
-    app_state.current_command_str and calls
-    tello.send_rc_control(0, fwd, vert, yaw); if not airborne, the
-    command string/state is left as the caller set it and no RC command
-    is sent.
-
-    Args:
-        tello (djitellopy.Tello): Tello SDK client used to send the RC
-            control command.
-        app_state (AppState): Shared application state providing
-            pressed_keys (and its lock), airborne, command_lock and
-            current_command_str, and the stop events.
-
-    Returns:
-        None: This function does not return a value.
-    '''
     """Send RC commands based on currently pressed keys."""
     logging.info("State: MANUAL (looping on key presses)")
     
@@ -147,17 +87,18 @@ def run_manual_control(tello, app_state):
         pressed_keys = app_state.pressed_keys.copy()
     
     # Check for movement commands (can be combined)
-    if ord('W') in pressed_keys or ord('w') in pressed_keys:
+    # Bfrost
+    if 'w' in pressed_keys or 'W' in pressed_keys:
         fwd = 60
-    if ord('S') in pressed_keys or ord('s') in pressed_keys:
+    if 's' in pressed_keys or 'S' in pressed_keys:
         fwd = -60
-    if ord('A') in pressed_keys or ord('a') in pressed_keys:
+    if 'a' in pressed_keys or 'A' in pressed_keys:
         yaw = -60
-    if ord('D') in pressed_keys or ord('d') in pressed_keys:
+    if 'd' in pressed_keys or 'D' in pressed_keys:
         yaw = 60
-    if ord('R') in pressed_keys or ord('r') in pressed_keys:
+    if 'r' in pressed_keys or 'R' in pressed_keys:
         vert = 60
-    if ord('F') in pressed_keys or ord('f') in pressed_keys:
+    if 'f' in pressed_keys or 'F' in pressed_keys:
         vert = -60
     
     if app_state.airborne:
@@ -167,49 +108,6 @@ def run_manual_control(tello, app_state):
         tello.send_rc_control(0, fwd, vert, yaw)
 
 def run_control_loop(tello, app_state):
-    '''
-    Runs the Tello subsystem's main control loop at CONTROL_RATE-second
-    intervals until app_state.stop_event or app_state.control_stop is
-    set: reads the current drone_state, target_id, the target's tracked
-    data, and the current frame under their respective locks, then
-    dispatches based on drone_state:
-
-      - "MANUAL": delegates to run_manual_control() and clears the
-        displayed command string.
-      - "TRACKING": if target_id is None, sends a zero RC command and
-        transitions to "MANUAL". If the target's tracked data is missing
-        (target lost), transitions to "HOVERING" (recording the loss
-        time) and, if airborne, sends a zero RC command. Otherwise,
-        computes RC commands via compute_velocity_commands(), updates the
-        displayed command string, and sends them via
-        tello.send_rc_control() if airborne.
-      - "HOVERING": clears the displayed command string. If the target's
-        tracked data has reappeared, transitions back to "TRACKING".
-        Otherwise, if HOVER_TIMEOUT seconds have elapsed since the target
-        was lost, transitions to "RETURNING" (recording the hold start
-        time) and, if airborne, sends a zero RC command; if not yet timed
-        out, sends a zero RC command (if airborne) and logs the remaining
-        time.
-      - "RETURNING": once RETURN_HOLD_DURATION seconds have elapsed since
-        the hold started, transitions to "MANUAL" and clears target_id.
-
-    Exceptions raised inside a single iteration are caught, logged (unless
-    the stop event is set), and the loop continues after the usual sleep.
-    On exit, sends one final zero RC command (best-effort, any exception
-    is swallowed).
-
-    Args:
-        tello (djitellopy.Tello): Tello SDK client used to send RC control
-            commands.
-        app_state (AppState): Shared application state providing
-            drone_state, target_id, tracked, frame (each with its lock),
-            hover_lost_time, hold_start_time, current_command_str (and its
-            lock), airborne, and the stop events.
-
-    Returns:
-        None: This function does not return a value; it runs until one of
-            the stop events is set.
-    '''
     logging.info("Control loop started.")
     
     control_runtime_ds = 0 # control loop runtime in deciseconds

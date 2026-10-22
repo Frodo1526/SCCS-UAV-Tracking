@@ -1,0 +1,17 @@
+{
+  "source_type": "stream",
+  "video_path": "",
+  "camera_name": "OV01A",
+  "main_model_name": "yolo26n.pt",
+  "main_image_size_px": 960,
+  "aerial_model_name": "yolo26m-obb.pt",
+  "aerial_image_size_px": 1280,
+  "min_confidence": 0.1,
+  "selected_class_names": [
+    "car"
+  ],
+  "track_people": true,
+  "show_trails": true,
+  "should_start_at_max_speed": false,
+  "device_choice": "auto"
+}

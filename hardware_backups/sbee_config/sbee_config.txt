@@ -1,1 +1,2 @@
 [2026/09/22] - Motors working individually & spinning in the correct direction.
+[2026/10/27] - Changing idle armed motor spin speed - working 

@@ -4,9 +4,9 @@
 LOG_FILE=
 _log() { if [[ -n "$LOG_FILE" ]]; then printf '%s [%s] %s\n' "$(date '+%F %T')" "$1" "$2" >> "$LOG_FILE"; fi; }
 
-info()  { printf '\033[1;34m[INFO]\033[0m %s\n' "$1" >&2; _log INFO "$1"; }
-warn()  { printf '\033[1;33m[WARN]\033[0m %s\n' "$1" >&2; _log WARN "$1"; }
-error() { printf '\033[1;31m[ERROR]\033[0m %s\n' "$1" >&2; _log ERROR "$1"; }
+info()  { printf '\033[1;34m[INFO]\033[0m %s\n' "$1" >&2; _log [INFO] "$1"; }
+warn()  { printf '\033[1;33m[WARN]\033[0m %s\n' "$1" >&2; _log [WARN] "$1"; }
+error() { printf '\033[1;31m[ERROR]\033[0m %s\n' "$1" >&2; _log [ERROR] "$1"; }
 
 CONFIG="${CONFIG:-/boot/firmware/config.txt}"   # override for testing: CONFIG=~/config.test ./setup.sh --dryrun
 VERIFY_LOG="${VERIFY_LOG:-/var/log/flight_logs/setup_verify.log}"   # dir is created by the service's LogsDirectory=
@@ -19,24 +19,22 @@ usage() {
 }
 
 # Applies the config.txt edits to the file passed in ($1).
-# Uses sudo only when that file isn't writable by the current user.
+# Make sure the file is writable by whoever runs this (the real config.txt is root-owned).
 edit_config() {
     local f="$1"
-    local SUDO=sudo
-    [[ -w "$f" ]] && SUDO=
 
     if grep -q '^camera_auto_detect=' "$f"; then
-        $SUDO sed -i 's/^camera_auto_detect=.*/camera_auto_detect=0/' "$f"
+        sed -i 's/^camera_auto_detect=.*/camera_auto_detect=0/' "$f"
     else
-        echo 'camera_auto_detect=0' | $SUDO tee -a "$f" >/dev/null
+        echo 'camera_auto_detect=0' | tee -a "$f" >/dev/null
     fi
 
     if ! grep -qx 'dtoverlay=imx477' "$f"; then
-        printf '\n[all]\ndtoverlay=imx477\n' | $SUDO tee -a "$f" >/dev/null
+        printf '\n[all]\ndtoverlay=imx477\n' | tee -a "$f" >/dev/null
     fi
 
-    $SUDO sed -i 's/^dtoverlay=arducam-pivariety/#&/' "$f"
-    $SUDO sed -i 's/^dtoverlay=imx477,cam0/#&/' "$f"
+    sed -i 's/^dtoverlay=arducam-pivariety/#&/' "$f"
+    sed -i 's/^dtoverlay=imx477,cam0/#&/' "$f"
 }
 
 do_setup() {

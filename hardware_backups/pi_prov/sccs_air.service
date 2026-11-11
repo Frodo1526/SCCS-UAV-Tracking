@@ -14,9 +14,9 @@ Environment=PYTHONPATH=/home/capstone-pi/SCCS-UAV-Tracking
 Environment=PYTHONUNBUFFERED=1 
 ExecStart=/home/capstone-pi/<venv>/bin/python /home/capstone-pi/SCCS-UAV-Tracking/drone_air/air_boot.py
 Restart=on-failure 
-Restart=RestartSec=3
+RestartSec=3
 LogsDirectory=flight_logs
 TimeoutStopSec=10
 
 [Install]
-- WantedBy=multi-user.target
+WantedBy=multi-user.target

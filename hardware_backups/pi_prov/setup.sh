@@ -60,9 +60,9 @@ do_verify() {
     fi
     info "verify: started on $(hostname)"
 
-    grep -qx 'camera_auto_detect=0'            "$CONFIG" || { error "camera_auto_detect not 0"; ((fails++)); }
-    grep -qx 'dtoverlay=imx477'                "$CONFIG" || { error "imx477 overlay missing";   ((fails++)); }
-    grep -q  '^dtoverlay=arducam-pivariety'    "$CONFIG" && { error "stale pivariety overlay";  ((fails++)); }
+    grep -qx 'camera_auto_detect=0' "$CONFIG" || { error "camera_auto_detect not 0"; ((fails++)); }
+    grep -qx 'dtoverlay=imx477' "$CONFIG" || { error "imx477 overlay missing";   ((fails++)); }
+    grep -q  '^dtoverlay=arducam-pivariety' "$CONFIG" && { error "stale pivariety overlay";  ((fails++)); }
 
     if ! rpicam-hello --list-cameras 2>&1 | grep -q "imx477"; then
         error "no camera detected! please ensure the camera module is correctly mounted"

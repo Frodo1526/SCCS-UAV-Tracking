@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>File map</title></head>
+<body style="font-family: sans-serif">
+<p>Each box is a Python file. An arrow A &rarr; B means A imports B. Blue boxes are the focused folder.</p>
+<pre class="mermaid">
+flowchart LR
+  subgraph g0["tello_poc"]
+    f_tello_poc_app_state_py["tello_poc/app_state.py"]
+    f_tello_poc_ctrl_py["tello_poc/ctrl.py"]
+    f_tello_poc_main_py["tello_poc/main.py"]
+    f_tello_poc_tello_yolo_tracker_py["tello_poc/tello_yolo_tracker.py"]
+    f_tello_poc_tests_test_ctrl_py["tello_poc/tests/test_ctrl.py"]
+    f_tello_poc_ui_py["tello_poc/ui.py"]
+    f_tello_poc_yolo_inference_py["tello_poc/yolo_inference.py"]
+    f_tello_poc_yolov8_inference_py["tello_poc/yolov8_inference.py"]
+  end
+  f_tello_poc_main_py --> f_tello_poc_app_state_py
+  f_tello_poc_main_py --> f_tello_poc_ctrl_py
+  f_tello_poc_main_py --> f_tello_poc_ui_py
+  f_tello_poc_main_py --> f_tello_poc_yolo_inference_py
+  f_tello_poc_tests_test_ctrl_py --> f_tello_poc_ctrl_py
+  f_tello_poc_ui_py --> f_tello_poc_app_state_py
+  classDef focus fill:#dbe8ff,stroke:#2c6bd2
+  class f_tello_poc_app_state_py focus
+  class f_tello_poc_ctrl_py focus
+  class f_tello_poc_main_py focus
+  class f_tello_poc_tello_yolo_tracker_py focus
+  class f_tello_poc_tests_test_ctrl_py focus
+  class f_tello_poc_ui_py focus
+  class f_tello_poc_yolo_inference_py focus
+  class f_tello_poc_yolov8_inference_py focus
+</pre>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, maxTextSize: 500000, maxEdges: 2000 });
+</script>
+</body></html>

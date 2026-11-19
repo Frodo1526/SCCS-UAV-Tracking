@@ -230,11 +230,25 @@ def main():
     print("Starting drone forwarder...")
     print(f"Forwarding VIDEO UDP: {VIDEO_PORT} -> {LAPTOP_IP}:{VIDEO_PORT}")
     print(f"Forwarding DATA UDP: {DATA_PORT} -> {LAPTOP_IP}:{DATA_PORT}")
-    print(f"Forwarding COMMAND TCP: {COMMAND_PORT} -> {LAPTOP_IP}:{COMMAND_PORT}")
+    print(f"Forwarding COMMAND TCP: {COMMAND_PORT} -> {DRONE_IP}:{COMMAND_PORT}")
     
-    video_thread = threading.Thread(target=forward_udp, args=(int(VIDEO_PORT), LAPTOP_IP, int(VIDEO_PORT), 'VIDEO'), daemon=True)
-    data_thread = threading.Thread(target=forward_udp, args=(int(DATA_PORT), LAPTOP_IP, int(DATA_PORT), 'DATA'), daemon=True)
-    command_thread = threading.Thread(target=forward_tcp, args=(int(COMMAND_PORT), LAPTOP_IP, int(COMMAND_PORT), 'COMMAND'), daemon=True)
+    video_thread = threading.Thread(
+        target=forward_udp,
+        args=(5602, LAPTOP_IP, 5602, 'VIDEO'),
+        daemon=True
+    )
+
+    data_thread = threading.Thread(
+        target=forward_udp,
+        args=(5601, LAPTOP_IP, 5601, 'DATA'),
+        daemon=True
+    )
+
+    command_thread = threading.Thread(
+        target=forward_tcp,
+        args=(5603, DRONE_IP, 5603, 'COMMAND'),
+        daemon=True
+    )
     threads = [video_thread, data_thread, command_thread]
     
     for t in threads:

@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>File map</title></head>
+<body style="font-family: sans-serif">
+<p>Each box is a Python file. An arrow A &rarr; B means A imports B. Blue boxes are the focused folder.</p>
+<pre class="mermaid">
+flowchart LR
+  subgraph g0["common"]
+    f_common_sccs_common_centroid_tracker_py["common/sccs_common/centroid_tracker.py"]
+    f_common_sccs_common_config_py["common/sccs_common/config.py"]
+    f_common_sccs_common_protocol_py["common/sccs_common/protocol.py"]
+  end
+  subgraph g1["drone_air"]
+    f_drone_air_app_state_py["drone_air/app_state.py"]
+    f_drone_air_command_control_py["drone_air/command_control.py"]
+    f_drone_air_experimental_jitter_reducer_py["drone_air/experimental/jitter_reducer.py"]
+    f_drone_air_hailo_inference_py["drone_air/hailo_inference.py"]
+    f_drone_air_main_py["drone_air/main.py"]
+    f_drone_air_scripts_air_pi_videotest_py["drone_air/scripts/air_pi_videotest.py"]
+    f_drone_air_tests_test_command_control_py["drone_air/tests/test_command_control.py"]
+    f_drone_air_vid_cmd_data_py["drone_air/vid_cmd_data.py"]
+  end
+  f_drone_air_app_state_py --> f_common_sccs_common_centroid_tracker_py
+  f_drone_air_hailo_inference_py --> f_drone_air_vid_cmd_data_py
+  f_drone_air_main_py --> f_drone_air_app_state_py
+  f_drone_air_main_py --> f_drone_air_command_control_py
+  f_drone_air_main_py --> f_drone_air_hailo_inference_py
+  f_drone_air_main_py --> f_drone_air_vid_cmd_data_py
+  f_drone_air_tests_test_command_control_py --> f_drone_air_command_control_py
+  f_drone_air_vid_cmd_data_py --> f_common_sccs_common_config_py
+  f_drone_air_vid_cmd_data_py --> f_common_sccs_common_protocol_py
+  f_drone_air_vid_cmd_data_py --> f_drone_air_hailo_inference_py
+  classDef focus fill:#dbe8ff,stroke:#2c6bd2
+  class f_drone_air_app_state_py focus
+  class f_drone_air_command_control_py focus
+  class f_drone_air_experimental_jitter_reducer_py focus
+  class f_drone_air_hailo_inference_py focus
+  class f_drone_air_main_py focus
+  class f_drone_air_scripts_air_pi_videotest_py focus
+  class f_drone_air_tests_test_command_control_py focus
+  class f_drone_air_vid_cmd_data_py focus
+</pre>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, maxTextSize: 500000, maxEdges: 2000 });
+</script>
+</body></html>

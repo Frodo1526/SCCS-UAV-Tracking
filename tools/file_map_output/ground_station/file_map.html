@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>File map</title></head>
+<body style="font-family: sans-serif">
+<p>Each box is a Python file. An arrow A &rarr; B means A imports B. Blue boxes are the focused folder.</p>
+<pre class="mermaid">
+flowchart LR
+  subgraph g0["common"]
+    f_common_sccs_common_config_py["common/sccs_common/config.py"]
+    f_common_sccs_common_protocol_py["common/sccs_common/protocol.py"]
+  end
+  subgraph g1["ground_station"]
+    f_ground_station_app_state_py["ground_station/app_state.py"]
+    f_ground_station_data_cmd_py["ground_station/data_cmd.py"]
+    f_ground_station_main_py["ground_station/main.py"]
+    f_ground_station_ui_py["ground_station/ui.py"]
+    f_ground_station_video_py["ground_station/video.py"]
+  end
+  f_ground_station_data_cmd_py --> f_common_sccs_common_config_py
+  f_ground_station_data_cmd_py --> f_common_sccs_common_protocol_py
+  f_ground_station_main_py --> f_ground_station_app_state_py
+  f_ground_station_main_py --> f_ground_station_data_cmd_py
+  f_ground_station_main_py --> f_ground_station_ui_py
+  f_ground_station_main_py --> f_ground_station_video_py
+  f_ground_station_ui_py --> f_ground_station_data_cmd_py
+  f_ground_station_video_py --> f_ground_station_data_cmd_py
+  classDef focus fill:#dbe8ff,stroke:#2c6bd2
+  class f_ground_station_app_state_py focus
+  class f_ground_station_data_cmd_py focus
+  class f_ground_station_main_py focus
+  class f_ground_station_ui_py focus
+  class f_ground_station_video_py focus
+</pre>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, maxTextSize: 500000, maxEdges: 2000 });
+</script>
+</body></html>

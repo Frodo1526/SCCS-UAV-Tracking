@@ -1,0 +1,31 @@
+Root: C:\SCCS-UAV-Tracking
+Files: 5
+
+ground_station/app_state.py
+    used by    ground_station/main.py
+    libraries  threading
+
+ground_station/data_cmd.py
+    imports    common/sccs_common/config.py
+    imports    common/sccs_common/protocol.py
+    used by    ground_station/main.py
+    used by    ground_station/ui.py
+    used by    ground_station/video.py
+    libraries  json, logging, msgpack, os, socket, struct, time
+
+ground_station/main.py
+    imports    ground_station/app_state.py
+    imports    ground_station/data_cmd.py
+    imports    ground_station/ui.py
+    imports    ground_station/video.py
+    libraries  gi, logging, os, platform, pygame, sys, threading
+
+ground_station/ui.py
+    imports    ground_station/data_cmd.py
+    used by    ground_station/main.py
+    libraries  logging, pygame
+
+ground_station/video.py
+    imports    ground_station/data_cmd.py
+    used by    ground_station/main.py
+    libraries  gi, logging, numpy, threading

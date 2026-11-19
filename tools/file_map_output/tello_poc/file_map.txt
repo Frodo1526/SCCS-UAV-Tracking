@@ -1,0 +1,38 @@
+Root: C:\SCCS-UAV-Tracking
+Files: 8
+
+tello_poc/app_state.py
+    used by    tello_poc/main.py
+    used by    tello_poc/ui.py
+    libraries  collections, tello_poc, threading, time
+
+tello_poc/ctrl.py
+    used by    tello_poc/main.py
+    used by    tello_poc/tests/test_ctrl.py
+    libraries  logging, numpy, time
+
+tello_poc/main.py
+    imports    tello_poc/app_state.py
+    imports    tello_poc/ctrl.py
+    imports    tello_poc/ui.py
+    imports    tello_poc/yolo_inference.py
+    libraries  cv2, djitellopy, logging, pynput, signal, sys, threading, time, ultralytics
+
+tello_poc/tello_yolo_tracker.py
+    libraries  cv2, djitellopy, numpy, pygame, queue, threading, time, torch, ultralytics
+
+tello_poc/tests/test_ctrl.py
+    imports    tello_poc/ctrl.py
+    libraries  math, os, pytest, sys
+
+tello_poc/ui.py
+    imports    tello_poc/app_state.py
+    used by    tello_poc/main.py
+    libraries  collections, cv2, datetime, logging, time
+
+tello_poc/yolo_inference.py
+    used by    tello_poc/main.py
+    libraries  collections, cv2, logging, tello_poc, time
+
+tello_poc/yolov8_inference.py
+    libraries  collections, cv2, logging, time

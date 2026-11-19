@@ -5,7 +5,7 @@ services:
       dockerfile: ground_station/Dockerfile
     image: sccs-ground-station:latest
     container_name: sccs-ground-station
-    network_mode: host   # see networking note below
+    network_mode: host
     environment:
       - DISPLAY=${DISPLAY}
       - DRONE_CONFIG=/app/ground_station/config.toml

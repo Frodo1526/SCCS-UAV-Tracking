@@ -1,0 +1,43 @@
+Root: C:\SCCS-UAV-Tracking
+Files: 8
+
+drone_air/app_state.py
+    imports    common/sccs_common/centroid_tracker.py
+    used by    drone_air/main.py
+    libraries  socket, threading
+
+drone_air/command_control.py
+    used by    drone_air/main.py
+    used by    drone_air/tests/test_command_control.py
+    libraries  numpy
+
+drone_air/experimental/jitter_reducer.py
+    libraries  math
+
+drone_air/hailo_inference.py
+    imports    drone_air/vid_cmd_data.py
+    used by    drone_air/main.py
+    used by    drone_air/vid_cmd_data.py
+    libraries  gi, hailo, logging, msgpack, numpy, pathlib, socket, subprocess, sys, time
+
+drone_air/main.py
+    imports    drone_air/app_state.py
+    imports    drone_air/command_control.py
+    imports    drone_air/hailo_inference.py
+    imports    drone_air/vid_cmd_data.py
+    libraries  gi, pathlib, sys, threading, time
+
+drone_air/scripts/air_pi_videotest.py
+    libraries  gi, sys, threading, time
+
+drone_air/tests/test_command_control.py
+    imports    drone_air/command_control.py
+    libraries  math, os, sys
+
+drone_air/vid_cmd_data.py
+    imports    common/sccs_common/config.py
+    imports    common/sccs_common/protocol.py
+    imports    drone_air/hailo_inference.py
+    used by    drone_air/hailo_inference.py
+    used by    drone_air/main.py
+    libraries  asyncio, gi, json, logging, math, mavsdk, os, pathlib, pymavlink, socket, struct, time

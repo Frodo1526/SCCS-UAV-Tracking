@@ -1,19 +1,4 @@
-"""Shared wire-format constants and helpers for the drone_air <-> ground_station
-UDP telemetry link.
-
-Previously ``PACKET_HEADER_FMT`` was defined independently in both
-``drone_air/vid_cmd_data.py`` and ``ground_station/data_cmd.py``, with a
-comment on the receiving side reading "Must match the constants in air_pi.py
-exactly" -- i.e. the two sides were already known to be a hand-synchronized
-contract with nothing enforcing agreement between them (see the earlier
-file-relationship report, "Shared Data Models" section). Importing both
-format and length from one place removes that risk.
-
-This module also provides ``pack_fragments`` / a symmetric reassembly helper
-so the fragmentation logic itself can be unit tested without a socket -- the
-original code review flagged the lack of a round-trip test for this as a
-concrete testing gap.
-"""
+"""Shared wire-format constants and helpers for the drone_air <-> ground_station UDP telemetry link."""
 
 import math
 import struct

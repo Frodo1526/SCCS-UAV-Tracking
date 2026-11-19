@@ -1,4 +1,3 @@
-#Ahmad Sanadikis Creation
 """Shared TOML configuration loading for the SCCS Drone project."""
 import os
 import logging

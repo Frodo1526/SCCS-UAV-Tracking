@@ -12,7 +12,7 @@ SupplementaryGroups=video dialout
 WorkingDirectory=/home/capstone-pi/SCCS-UAV-Tracking/drone_air
 Environment=PYTHONPATH=/home/capstone-pi/SCCS-UAV-Tracking
 Environment=PYTHONUNBUFFERED=1 
-ExecStart=/home/capstone-pi/<venv>/bin/python /home/capstone-pi/SCCS-UAV-Tracking/drone_air/air_boot.py
+ExecStart=/home/capstone-pi/sccs-venv/bin/python /home/capstone-pi/SCCS-UAV-Tracking/drone_air/main.py
 Restart=on-failure 
 RestartSec=3
 LogsDirectory=flight_logs
